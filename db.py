@@ -70,11 +70,11 @@ def init_db():
                (order_id, customer_id, item, amount, status, carrier, eta, ordered_on)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                ("ORD1001", 1, "Matte Lipstick - Ruby",      649.00,  "Shipped",    "Delhivery", "2 days",              "2026-07-18"),
-                ("ORD1002", 1, "Vitamin C Serum 30ml",      1299.00,  "Processing", None,        "4 days",              "2026-07-22"),
-                ("ORD1003", 2, "Sunscreen SPF50 Combo",      899.00,  "Delivered",  "BlueDart",  "Delivered 2026-07-20", "2026-07-15"),
-                ("ORD1004", 3, "Hair Serum + Shampoo Kit",  1849.00,  "Shipped",    "Ekart",     "1 day",               "2026-07-21"),
-                ("ORD1005", 2, "Face Wash Duo",              499.00,  "Cancelled",  None,        None,                  "2026-07-10"),
+                ("ORD1001", 1, "Wireless ANC Earbuds Pro",   4999.00,  "Shipped",    "Delhivery", "2 days",              "2026-07-18"),
+                ("ORD1002", 1, "Mechanical Gaming Keyboard", 7499.00,  "Processing", None,        "4 days",              "2026-07-22"),
+                ("ORD1003", 2, "Ultra HD Action Camera 4K", 12999.00,  "Delivered",  "BlueDart",  "Delivered 2026-07-20", "2026-07-15"),
+                ("ORD1004", 3, "Smart Fitness Watch V2",     3499.00,  "Shipped",    "Ekart",     "1 day",               "2026-07-21"),
+                ("ORD1005", 2, "USB-C Fast Charger 65W",     1999.00,  "Cancelled",  None,        None,                  "2026-07-10"),
             ],
         )
 
