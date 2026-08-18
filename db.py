@@ -1,0 +1,151 @@
+"""
+DATABASE LAYER — real SQLite, replacing the Phase 1 fake dict.
+
+Two tables:
+  customers — who is allowed to ask about what
+  orders    — belongs to exactly one customer via customer_id
+
+The customer_id foreign key is the whole point. It's what makes it
+POSSIBLE to leak one customer's orders to another, and therefore what
+the verification step (verify.py) exists to protect.
+
+SECURITY NOTE: every query here uses parameterized placeholders (?),
+never f-strings or string concatenation. An LLM will be choosing what
+values get passed in here, so treating all of it as untrusted input
+is not optional.
+"""
+
+import sqlite3
+from pathlib import Path
+
+DB_PATH = Path(__file__).parent / "support.db"
+
+
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # rows behave like dicts, not tuples
+    return conn
+
+
+def init_db():
+    """Create tables and seed demo data. Safe to run repeatedly."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            customer_id INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL,
+            email       TEXT UNIQUE NOT NULL,
+            phone       TEXT UNIQUE NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id     TEXT PRIMARY KEY,
+            customer_id  INTEGER NOT NULL,
+            item         TEXT NOT NULL,
+            amount       REAL NOT NULL,
+            status       TEXT NOT NULL,
+            carrier      TEXT,
+            eta          TEXT,
+            ordered_on   TEXT NOT NULL,
+            FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+        )
+    """)
+
+    # Seed only if empty, so re-running doesn't duplicate rows
+    if cur.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 0:
+        cur.executemany(
+            "INSERT INTO customers (customer_id, name, email, phone) VALUES (?, ?, ?, ?)",
+            [
+                (1, "Ananya Sharma", "ananya.s@example.com", "+919876543210"),
+                (2, "Rohit Verma",   "rohit.v@example.com",  "+919812345678"),
+                (3, "Meera Nair",    "meera.n@example.com",  "+919900112233"),
+            ],
+        )
+        cur.executemany(
+            """INSERT INTO orders
+               (order_id, customer_id, item, amount, status, carrier, eta, ordered_on)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("ORD1001", 1, "Matte Lipstick - Ruby",      649.00,  "Shipped",    "Delhivery", "2 days",              "2026-07-18"),
+                ("ORD1002", 1, "Vitamin C Serum 30ml",      1299.00,  "Processing", None,        "4 days",              "2026-07-22"),
+                ("ORD1003", 2, "Sunscreen SPF50 Combo",      899.00,  "Delivered",  "BlueDart",  "Delivered 2026-07-20", "2026-07-15"),
+                ("ORD1004", 3, "Hair Serum + Shampoo Kit",  1849.00,  "Shipped",    "Ekart",     "1 day",               "2026-07-21"),
+                ("ORD1005", 2, "Face Wash Duo",              499.00,  "Cancelled",  None,        None,                  "2026-07-10"),
+            ],
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def find_customer(identifier: str):
+    """
+    Look up a customer by ID, email, or phone. Returns a dict or None.
+
+    This is the ONLY way a customer_id enters the system. Nothing else
+    is allowed to set it — see verify.py for why that matters.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    ident = identifier.strip()
+
+    # Try numeric customer ID
+    if ident.isdigit():
+        row = cur.execute(
+            "SELECT * FROM customers WHERE customer_id = ?", (int(ident),)
+        ).fetchone()
+        if row:
+            conn.close()
+            return dict(row)
+
+    # Try email (case-insensitive)
+    row = cur.execute(
+        "SELECT * FROM customers WHERE LOWER(email) = LOWER(?)", (ident,)
+    ).fetchone()
+    if row:
+        conn.close()
+        return dict(row)
+
+    # Try phone, normalized to digits only so +91-98765 43210 == +919876543210
+    digits = "".join(c for c in ident if c.isdigit())
+    if digits:
+        rows = cur.execute("SELECT * FROM customers").fetchall()
+        for r in rows:
+            if "".join(c for c in r["phone"] if c.isdigit()) == digits:
+                conn.close()
+                return dict(r)
+
+    conn.close()
+    return None
+
+
+def get_order(order_id: str, customer_id: int):
+    """
+    Fetch an order — but ONLY if it belongs to this customer.
+
+    The customer_id in the WHERE clause is the security boundary. Even
+    if the agent is tricked into asking for someone else's order ID,
+    this returns None rather than another customer's data.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM orders WHERE UPPER(order_id) = UPPER(?) AND customer_id = ?",
+        (order_id.strip(), customer_id),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_orders(customer_id: int):
+    """All orders for one customer, newest first."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE customer_id = ? ORDER BY ordered_on DESC",
+        (customer_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
