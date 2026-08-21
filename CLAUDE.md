@@ -23,7 +23,7 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 7 complete
+## Status: Phase 8 complete
 Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
 
@@ -51,6 +51,7 @@ Files:
                + last_user_text() helper
 - verify.py  — identifier extraction + verification gate
 - tools.py   — customer-scoped order tools, public policy tool
+- llm.py     — every Claude call + its deterministic fallback
 - agents.py  — supervisor_node, order_lookup_node, policy_node, refund_node
 - graph.py   — StateGraph wiring with verify gate in front, InMemorySaver
 - main.py    — 5 multi-turn demo conversations (thread_id based)
@@ -70,6 +71,23 @@ PHASE 7 gotchas:
   import is lazy, so `pip install -r requirements.txt && python main.py` keeps
   working with no API extras. Keep it that way.
 
+PHASE 8 (done): every LLM call lives in llm.py. Four jobs beyond routing:
+resolve_order_reference, policy_answer, risk_summary, run_order_tools.
+
+TWO RULES for anything added to llm.py:
+1. EVERY function needs a deterministic fallback, taken on no-key, on
+   exception, and on invalid output. TEST_MODE must keep working.
+2. THE MODEL SUGGESTS, THE CODE VERIFIES. Anything the model returns that
+   could reach the DB is validated against a customer-scoped set first.
+
+Tool calling is real now (llm.run_order_tools uses bind_tools). customer_id is
+popped from every tool call and re-injected from verified state. The pop is NOT
+redundant with the schema omission - it covers prompt injection and future
+schema drift. Do not remove it.
+
+Live paths are tested with a stub model (tests/test_llm.py, class StubModel);
+it implements only bind_tools + invoke. Keep it that way so CI needs no key.
+
 SECURITY INVARIANTS (do not break these — they are tested):
 1. customer_id is WRITE-ONCE, set only by verify_node after a DB lookup.
    No other node, tool, or LLM output may set or change it.
@@ -88,6 +106,10 @@ SECURITY INVARIANTS (do not break these — they are tested):
 10. A refund needing approval writes nothing before a human decides.
 11. Everything above interrupt() is side-effect free.
 12. An unrecognised or malformed approval decision counts as a denial.
+13. customer_id in a model-generated tool call is discarded and replaced with
+    the verified one. The model never chooses whose data is read.
+14. A model-named order ID is only honoured if it is in that customer's own
+    order list.
 
 PHASE 4 (done): specialists edge back to supervisor, not END, so one turn
 can use several. New refund specialist - the only node that writes.

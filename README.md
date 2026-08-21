@@ -21,7 +21,8 @@ This project solves that structurally instead.
 | Unverified access to order data | The verification gate sits between START and the supervisor. There is no edge that reaches an order tool without passing it. |
 | SQL injection through LLM output | Every query is parameterized. No f-strings or concatenation against any input. |
 | Order IDs misread as customer IDs | Identifier extraction is deliberately narrow; `ORD1002` cannot be parsed as customer 1002 (regression-tested). |
-| LLM choosing its own `customer_id` | `customer_id` is an `InjectedToolArg`, so it is absent from the tool schema the model sees. The model cannot name a customer even once tools are bound to it. |
+| LLM choosing its own `customer_id` | `customer_id` is an `InjectedToolArg`, absent from the schema the model sees. Tools are now genuinely bound to the model, and `customer_id` is injected at execution time - a tool call arriving with one is discarded and overwritten. **The model can call tools but structurally cannot choose whose data it reads.** |
+| Model naming data it was not offered | `resolve_order_reference` validates the model's answer against a customer-scoped order list. Anything else falls back. The model suggests; the code verifies. |
 | Cross-account **mutation** | The refund `UPDATE` carries `customer_id` in its own `WHERE` clause. Ownership is not checked by a preceding `SELECT`, so there is no time-of-check/time-of-use gap. |
 | Double refunds | `status` and `refund_status` are in the `UPDATE`'s `WHERE` clause, so a repeat attempt changes zero rows. Idempotency is enforced by the statement, not by a re-read. |
 | A turn looping forever | Three independent stops: a refund is terminal, a specialist answers at most once per turn, and a hard cap of 3 hops. An unbounded loop-back raises `GraphRecursionError`, so this is not optional. |
@@ -62,14 +63,16 @@ allows), then **refund** (act on it), then the supervisor closes the turn.
 - **Orchestration:** LangGraph (StateGraph, conditional edges, typed state
   with an `add_messages` reducer, `InMemorySaver` checkpointer keyed by
   `thread_id`)
-- **LLM:** Anthropic Claude for intent routing (with a keyword-based
-  test mode so the system runs without API keys)
+- **LLM:** Anthropic Claude for intent routing, fuzzy order resolution,
+  grounded policy answers, reviewer risk briefs, and real tool calling via
+  `bind_tools`. Every call has a deterministic fallback, so the whole system
+  still runs with no API key.
 - **Database:** SQLite, fully parameterized queries
 - **API:** FastAPI over the compiled graph, `SqliteSaver` so a pending approval
   outlives a restart
 - **Frontend:** React + TypeScript (Vite), agent activity feed + escalation queue
-- **Tests:** pytest, 51 tests (37 core + 14 API) covering the security,
-  termination, approval and queue invariants
+- **Tests:** pytest, 72 tests. The LLM paths are covered by a stub chat
+  model, so tool calling and every fallback run in CI without an API key.
 
 ## Running it
 
@@ -132,7 +135,8 @@ specialist still sees the original question, not the verification reply.
 pyproject.toml - pytest config (pythonpath, testpaths)
 api.py       - FastAPI over the graph (threads, messages, escalation queue)
 frontend/    - React + TS console (Vite)
-docs/        - Phase 2 audit, Phase 4 design, Phase 6 and 7 notes
+llm.py       - every place Claude is used, each with a deterministic fallback
+docs/        - phase 2 audit, phase 4 design, phase 6/7/8 notes
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
 verify.py    - identity extraction + verification gate
@@ -153,6 +157,8 @@ tests/       - security invariant tests (test_security.py)
       (deferred: recalling how a similar past ticket was resolved is a real
       use for embeddings; choosing between three route labels is not)
 - [x] Phase 7 - React console: agent activity feed + escalation queue
+- [x] Phase 8 - real LLM work: bound tools, fuzzy order refs, grounded policy
+      answers, reviewer risk briefs
 - [ ] Phase 5 - async execution (Celery + Redis), once a genuinely slow tool
       call exists to justify it
 
