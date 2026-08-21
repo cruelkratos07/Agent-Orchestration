@@ -21,6 +21,7 @@ This project solves that structurally instead.
 | Unverified access to order data | The verification gate sits between START and the supervisor. There is no edge that reaches an order tool without passing it. |
 | SQL injection through LLM output | Every query is parameterized. No f-strings or concatenation against any input. |
 | Order IDs misread as customer IDs | Identifier extraction is deliberately narrow; `ORD1002` cannot be parsed as customer 1002 (regression-tested). |
+| LLM choosing its own `customer_id` | `customer_id` is an `InjectedToolArg`, so it is absent from the tool schema the model sees. The model cannot name a customer even once tools are bound to it. |
 
 ## Architecture
 
@@ -42,11 +43,12 @@ START -> verify -> [verified?] -> supervisor -> order_lookup -> END
 ## Stack
 
 - **Orchestration:** LangGraph (StateGraph, conditional edges, typed state
-  with an `add_messages` reducer)
+  with an `add_messages` reducer, `InMemorySaver` checkpointer keyed by
+  `thread_id`)
 - **LLM:** Anthropic Claude for intent routing (with a keyword-based
   test mode so the system runs without API keys)
 - **Database:** SQLite, fully parameterized queries
-- **Tests:** pytest, 11 tests covering the security invariants
+- **Tests:** pytest, 14 tests covering the security invariants
 
 ## Running it
 
@@ -81,9 +83,14 @@ python -m pytest tests/ -q
 Try verifying as customer 1, then asking for ORD1003 - it belongs to
 customer 2 and will not be returned.
 
+Identity and question can also arrive in the same message
+("I'm customer 1, where is ORD1002?") - the verify gate runs first and the
+specialist still sees the original question, not the verification reply.
+
 ## Project structure
 
 ```
+pyproject.toml - pytest config (pythonpath, testpaths)
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
 verify.py    - identity extraction + verification gate
@@ -91,7 +98,7 @@ tools.py     - customer-scoped order tools, public policy tool
 agents.py    - supervisor + specialist nodes
 graph.py     - StateGraph wiring
 main.py      - multi-turn demo conversations
-tests/       - security invariant tests
+tests/       - security invariant tests (test_security.py)
 ```
 
 ## Roadmap

@@ -23,21 +23,38 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 2 complete
-Real SQLite DB + identity verification gate + 11 security tests.
+## Status: Phase 2 complete (+ correctness pass)
+Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
+
+Correctness pass applied on top of Phase 2:
+- Nodes read the last HumanMessage (state.last_user_text), not messages[-1].
+  Previously "I'm customer 1, where is ORD1002?" verified and then silently
+  dropped the question, because verify_node's own AIMessage was messages[-1].
+- customer_id is Annotated[int, InjectedToolArg] in tools.py, so it is not in
+  the schema the LLM sees. Required before Phase 4 binds tools to the model.
+- supervisor routing goes through agents.normalize_route, which coerces the
+  LLM label into VALID_ROUTES. Exact-match on the raw reply used to drop
+  "'policy'", "Order_Lookup" and "The category is order_lookup" into END
+  with no error, making LIVE_MODE unreliable.
+- Graph compiles with InMemorySaver. Callers pass a thread_id and only the new
+  message. Prerequisite for Phase 6 (interrupt() needs a checkpoint to resume
+  from) and Phase 7 (one thread per frontend conversation).
+- Tests live in tests/ so the documented `pytest tests/ -q` actually runs;
+  sys.path hack replaced by pyproject.toml pythonpath.
 
 Graph: START -> verify -> [verified?] -> supervisor -> specialist -> END
 
 Files:
 - db.py      — SQLite schema (customers, orders), parameterized queries
 - state.py   — AgentState (messages, next, customer_id, customer_name, verified)
+               + last_user_text() helper
 - verify.py  — identifier extraction + verification gate
 - tools.py   — customer-scoped order tools, public policy tool
 - agents.py  — supervisor_node, order_lookup_node, policy_node
-- graph.py   — StateGraph wiring with verify gate in front
-- main.py    — 4 multi-turn demo conversations
-- tests/     — 11 pytest security invariant tests
+- graph.py   — StateGraph wiring with verify gate in front, InMemorySaver
+- main.py    — 5 multi-turn demo conversations (thread_id based)
+- tests/     — 14 pytest security invariant tests
 
 SECURITY INVARIANTS (do not break these — they are tested):
 1. customer_id is WRITE-ONCE, set only by verify_node after a DB lookup.
@@ -46,6 +63,10 @@ SECURITY INVARIANTS (do not break these — they are tested):
 3. No path from START reaches an order tool without passing verify.
 4. All SQL is parameterized. Never f-string or concatenate user input.
 5. Order IDs (ORD1002) must never parse as customer IDs.
+6. customer_id must never appear in the tool schema the LLM sees. It is an
+   InjectedToolArg — the caller supplies it from verified state, never the
+   model. This is what makes invariant 1 structural rather than a convention
+   held up by agents.py.
 
 Known Phase 2 limitation (by design): specialists go straight to END,
 no looping back to supervisor for multi-step tasks. That's Phase 4.
