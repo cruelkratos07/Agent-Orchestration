@@ -25,6 +25,9 @@ This project solves that structurally instead.
 | Cross-account **mutation** | The refund `UPDATE` carries `customer_id` in its own `WHERE` clause. Ownership is not checked by a preceding `SELECT`, so there is no time-of-check/time-of-use gap. |
 | Double refunds | `status` and `refund_status` are in the `UPDATE`'s `WHERE` clause, so a repeat attempt changes zero rows. Idempotency is enforced by the statement, not by a re-read. |
 | A turn looping forever | Three independent stops: a refund is terminal, a specialist answers at most once per turn, and a hard cap of 3 hops. An unbounded loop-back raises `GraphRecursionError`, so this is not optional. |
+| Money moving without review | High-value and damage-claim refunds `interrupt()` before any write. The write sits strictly below the interrupt, because everything above it re-runs on resume. |
+| A malformed approval being read as "yes" | `normalize_decision` treats anything that is not a clear approval - `None`, `""`, a dict without `approved` - as a denial. |
+| An LLM approving its own refund | `approved` is an `InjectedToolArg`, like `customer_id`. It is absent from the schema the model sees. |
 
 ## Architecture
 
@@ -51,8 +54,8 @@ allows), then **refund** (act on it), then the supervisor closes the turn.
 - **order_lookup** - order status and order listing. Reads `customer_id`
   from verified state, never from user text.
 - **policy** - returns/refunds/exchanges. Needs no identity.
-- **refund** - issues refunds. The only node that writes. Refunds at or above
-  Rs 5,000 are flagged for a human instead of being issued.
+- **refund** - issues refunds. The only node that writes. High-value or
+  damage-claim refunds pause the graph and wait for a human to approve.
 
 ## Stack
 
@@ -62,7 +65,7 @@ allows), then **refund** (act on it), then the supervisor closes the turn.
 - **LLM:** Anthropic Claude for intent routing (with a keyword-based
   test mode so the system runs without API keys)
 - **Database:** SQLite, fully parameterized queries
-- **Tests:** pytest, 28 tests covering the security and termination invariants
+- **Tests:** pytest, 37 tests covering the security, termination and approval invariants
 
 ## Running it
 
@@ -92,7 +95,7 @@ python -m pytest tests/ -q
 |---|---|---|---|
 | 1 Ananya Sharma | ananya.s@example.com | +919876543210 | ORD1001, ORD1002, ORD1006 |
 | 2 Rohit Verma | rohit.v@example.com | +919812345678 | ORD1003, ORD1005 |
-| 3 Meera Nair | meera.n@example.com | +919900112233 | ORD1004 |
+| 3 Meera Nair | meera.n@example.com | +919900112233 | ORD1004, ORD1007 |
 
 Order states matter now that refunds exist: only **Delivered** orders are
 refundable. ORD1006 (Rs 2,499, customer 1) is below the approval threshold and
@@ -110,7 +113,7 @@ specialist still sees the original question, not the verification reply.
 
 ```
 pyproject.toml - pytest config (pythonpath, testpaths)
-docs/        - Phase 2 audit and Phase 4 design notes
+docs/        - Phase 2 audit, Phase 4 design, Phase 6 notes
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
 verify.py    - identity extraction + verification gate
@@ -126,12 +129,13 @@ tests/       - security invariant tests (test_security.py)
 - [x] Phase 1 - supervisor delegation, specialist agents, tool isolation
 - [x] Phase 2 - real database, identity verification, security tests
 - [x] Phase 4 - multi-step delegation; refund processing specialist
+- [x] Phase 6 - human-in-the-loop escalation for high-value refunds
 - [ ] Phase 3 - semantic memory (ChromaDB) for recall of similar past queries
       (deferred: recalling how a similar past ticket was resolved is a real
       use for embeddings; choosing between three route labels is not)
-- [ ] Phase 5 - async execution (Celery + Redis) for slow external calls
-- [ ] Phase 6 - human-in-the-loop escalation for high-value refunds
 - [ ] Phase 7 - React frontend with agent activity and escalation queue
+- [ ] Phase 5 - async execution (Celery + Redis), once a genuinely slow tool
+      call exists to justify it
 
 ## Credits
 

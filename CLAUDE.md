@@ -23,7 +23,7 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 4 complete
+## Status: Phase 6 complete
 Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
 
@@ -54,8 +54,8 @@ Files:
 - agents.py  — supervisor_node, order_lookup_node, policy_node, refund_node
 - graph.py   — StateGraph wiring with verify gate in front, InMemorySaver
 - main.py    — 5 multi-turn demo conversations (thread_id based)
-- tests/     — 28 pytest security + termination tests (hermetic temp DB)
-- docs/      — phase2-audit.md, phase4-design.md
+- tests/     — 37 pytest security/termination/approval tests (hermetic temp DB)
+- docs/      — phase2-audit.md, phase4-design.md, phase6-notes.md
 
 SECURITY INVARIANTS (do not break these — they are tested):
 1. customer_id is WRITE-ONCE, set only by verify_node after a DB lookup.
@@ -72,6 +72,9 @@ SECURITY INVARIANTS (do not break these — they are tested):
 8. A refund applies at most once per order; a repeat attempt changes 0 rows.
 9. Refund writes are scoped by customer_id in the UPDATE statement itself,
    never by a preceding read (no time-of-check/time-of-use gap).
+10. A refund needing approval writes nothing before a human decides.
+11. Everything above interrupt() is side-effect free.
+12. An unrecognised or malformed approval decision counts as a denial.
 
 PHASE 4 (done): specialists edge back to supervisor, not END, so one turn
 can use several. New refund specialist - the only node that writes.
@@ -87,6 +90,25 @@ An unbounded loop-back raises GraphRecursionError, it does not hang.
 across turns on the same thread_id and would need a per-turn reset; forget it
 and turn 2 of every conversation starts at the cap and silently does nothing.
 Deriving it makes that bug impossible. Don't "simplify" this into a counter.
+
+PHASE 6 (done): refunds needing judgement pause the graph via interrupt() and
+resume on Command(resume=...). No new state field was needed - the checkpointer
+added in the Phase 2 pass already persists a pause.
+
+THE ORDERING RULE (do not break this):
+  Everything ABOVE interrupt() runs a SECOND time when the graph resumes - the
+  node restarts, it does not continue. Verified by spike. So refund_node is
+  reads-only above the interrupt and the write is strictly below it. Moving
+  db.refund_order() above the interrupt makes one approval issue two refunds,
+  and the idempotent UPDATE would SWALLOW the second one - so the bug would be
+  invisible until the write stopped being idempotent.
+
+Escalation triggers (tools.escalation_reason): amount >= Rs 5,000, or the
+request mentions damaged/broken/faulty/defective. "Order not found" is
+deliberately NOT a trigger - it is an answer, not a judgement call.
+
+Malformed approval decisions FAIL SAFE to denial. Anything that isn't a clear
+approval does not move money.
 
 Refund rules: only Delivered orders are refundable. Refunds >= Rs 5,000
 (REFUND_APPROVAL_THRESHOLD in tools.py) are flagged for a human rather than
@@ -105,11 +127,13 @@ branch are reachable. A test fails if a future seed edit breaks that.
    choose between three route labels is a vector DB doing work a keyword
    match already does. Revisit when the use is recalling how a similar past
    ticket was RESOLVED, which is a real use for it.
-5. Celery + Redis — async execution for slow tool calls
-6. Human-in-the-loop escalation — trigger on: refund above a rupee
-   threshold, damaged-item claims, order not found. Pause the graph,
-   surface the decision, resume on approval.
-7. React frontend — agent activity feed + pending escalations queue
+6. DONE — human-in-the-loop escalation. Triggers: refund above the rupee
+   threshold, damaged-item claims. Order-not-found deliberately excluded.
+7. NEXT — React frontend. The escalation queue is graph.pending_approval()
+   called across threads; the payload shape is already defined there. For a
+   real deployment swap InMemorySaver for SqliteSaver/PostgresSaver so a
+   pending approval survives a restart.
+5. Celery + Redis — still deferred. No genuinely slow tool call exists yet.
 
 ## My conventions
 - Minimal diffs when editing existing code — don't restructure things
