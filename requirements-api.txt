@@ -1,0 +1,11 @@
+# Phase 7 extras: the HTTP API in front of the graph.
+#
+# Kept separate so `pip install -r requirements.txt && python main.py` still
+# runs the CLI demo with nothing else installed. tests/test_api.py skips itself
+# when these are absent, so the core suite stays green either way.
+-r requirements.txt
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+langgraph-checkpoint-sqlite==3.1.1
+httpx>=0.27

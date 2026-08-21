@@ -6,3 +6,7 @@ __pycache__/
 support.db
 .env
 *.zip
+checkpoints.sqlite
+*.sqlite
+frontend/node_modules/
+frontend/dist/

@@ -15,6 +15,9 @@ START that skips it, which is what makes the guarantee structural:
 an order tool cannot be reached without passing verification first.
 """
 
+import sqlite3
+from pathlib import Path
+
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from state import AgentState
@@ -34,7 +37,15 @@ def route_from_supervisor(state: AgentState) -> str:
     return END
 
 
-def build_graph():
+def build_graph(checkpointer=None):
+    """
+    Compile the graph.
+
+    checkpointer defaults to InMemorySaver, which is right for the CLI demo and
+    for tests. The API server passes a SqliteSaver instead: a web app that
+    forgets every pending refund approval when it restarts is not much of a
+    human-in-the-loop system.
+    """
     builder = StateGraph(AgentState)
 
     builder.add_node("verify", verify_node)
@@ -69,7 +80,40 @@ def build_graph():
     # new message instead of re-threading the whole state dict. It is also a
     # hard requirement for Phase 6: interrupt() pauses the graph by writing a
     # checkpoint, and there is nothing to resume from without one.
-    return builder.compile(checkpointer=InMemorySaver())
+    return builder.compile(checkpointer=checkpointer or InMemorySaver())
+
+
+def build_sqlite_graph(path):
+    """
+    A graph whose pauses outlive the process.
+
+    Returns (compiled_graph, checkpointer). The checkpointer is handed back
+    because the escalation queue needs to enumerate threads, and only the
+    checkpointer knows which threads exist.
+
+    check_same_thread=False because the API serves sync endpoints from a thread
+    pool. Callers must serialise access themselves - see api.GRAPH_LOCK.
+
+    Imported lazily so langgraph-checkpoint-sqlite stays an API-only dependency
+    and `pip install -r requirements.txt && python main.py` keeps working with
+    nothing extra.
+    """
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(path), check_same_thread=False)
+    checkpointer = SqliteSaver(connection)
+    return build_graph(checkpointer), checkpointer
+
+
+def list_thread_ids(checkpointer):
+    """Every thread the checkpointer has seen, most recently written first."""
+    seen = []
+    for checkpoint in checkpointer.list(None):
+        thread_id = checkpoint.config["configurable"]["thread_id"]
+        if thread_id not in seen:
+            seen.append(thread_id)
+    return seen
 
 
 def pending_approval(compiled_graph, config):
