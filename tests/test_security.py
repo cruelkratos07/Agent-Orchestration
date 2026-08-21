@@ -6,6 +6,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 import db
 from graph import graph
+from langgraph.types import Command
 from tools import (
     REFUND_APPROVAL_THRESHOLD,
     check_order_status,
@@ -13,6 +14,12 @@ from tools import (
     process_refund,
 )
 from verify import extract_identifier
+
+
+@pytest.fixture
+def thread(request):
+    """The config for one conversation thread, for tests that need to resume it."""
+    return {"configurable": {"thread_id": f"test-{request.node.name}"}}
 
 
 @pytest.fixture
@@ -131,18 +138,25 @@ def test_supervisor_route_normalization():
 
 # --- phase 4: multi-step delegation ---
 
-def test_two_specialists_in_one_turn(convo):
+def test_two_specialists_in_one_turn(thread):
     """
-    The acceptance test for Phase 4. One user message, two specialists: policy
-    explains the damaged-item rule, then refund acts on it. This is impossible
+    The acceptance test for Phase 4, now spanning a Phase 6 pause. One user
+    message, two specialists: policy explains the damaged-item rule, then
+    refund acts on it - and since Phase 6 the refund waits for a human first,
+    so the single turn straddles an interrupt and a resume. Neither is possible
     in the Phase 2 topology, where every specialist edged straight to END.
     """
-    convo("rohit.v@example.com")
-    state = convo("my action camera ORD1003 arrived damaged, I want a refund")
+    send(thread, "rohit.v@example.com")
+    paused = send(thread, "my action camera ORD1003 arrived damaged, I want a refund")
+
+    # policy has already answered; refund is holding for approval.
+    assert "policy_agent" in [getattr(m, "name", None) for m in paused["messages"]]
+    assert "__interrupt__" in paused
+
+    state = graph.invoke(Command(resume={"approved": True}), thread)
     names = [getattr(m, "name", None) for m in state["messages"]]
-    assert "policy_agent" in names
-    assert "refund_agent" in names
     assert names.index("policy_agent") < names.index("refund_agent")
+    assert state["next"] == "FINISH"
 
 
 def test_turn_terminates_at_step_cap():
@@ -216,9 +230,8 @@ def test_only_delivered_orders_are_refundable():
 
 def test_high_value_refund_is_flagged_not_processed():
     """
-    ORD1003 is Rs 12,999, above the threshold. It must be flagged for a human
-    and the database must be untouched. In Phase 6 this branch becomes
-    interrupt(); the condition is identical, only the mechanism changes.
+    The tool refuses a high-value write on its own authority, even though
+    refund_node now obtains approval before calling it. Belt and braces.
     """
     result = process_refund.invoke({"order_id": "ORD1003", "customer_id": 2})
     assert "human" in result.lower()
@@ -266,3 +279,115 @@ def test_damaged_claim_gets_the_damaged_item_policy():
         {"topic": "my action camera ORD1003 arrived damaged, I want a refund"}
     )
     assert "7 days" in result and "photo proof" in result
+
+
+# --- phase 6: human-in-the-loop approval ---
+
+def send(thread, text):
+    return graph.invoke({"messages": [HumanMessage(content=text)]}, thread)
+
+
+def test_high_value_refund_pauses_the_graph(thread):
+    """The turn stops mid-flight and nothing is written while it waits."""
+    send(thread, "rohit.v@example.com")
+    state = send(thread, "please refund ORD1003")
+
+    assert "__interrupt__" in state
+    payload = state["__interrupt__"][0].value
+    assert payload["type"] == "refund_approval"
+    assert payload["order_id"] == "ORD1003"
+    assert payload["amount"] == 12999.0
+    assert "auto-approval limit" in payload["reason"]
+    assert db.get_order("ORD1003", 2)["refund_status"] is None
+
+
+def test_pending_approval_helper_reports_the_waiting_decision(thread):
+    from graph import pending_approval
+
+    send(thread, "rohit.v@example.com")
+    send(thread, "please refund ORD1003")
+    assert pending_approval(graph, thread)["order_id"] == "ORD1003"
+
+
+def test_resume_with_approval_issues_the_refund(thread):
+    send(thread, "rohit.v@example.com")
+    send(thread, "please refund ORD1003")
+
+    state = graph.invoke(Command(resume={"approved": True, "note": "photos ok"}), thread)
+
+    assert db.get_order("ORD1003", 2)["refund_status"] == "Refunded"
+    reply = state["messages"][-1].content
+    assert "Refund of Rs 12999 issued" in reply
+    assert "photos ok" in reply
+    assert "__interrupt__" not in state
+
+
+def test_resume_with_denial_leaves_the_database_untouched(thread):
+    send(thread, "rohit.v@example.com")
+    send(thread, "please refund ORD1003")
+
+    state = graph.invoke(Command(resume={"approved": False, "note": "no proof"}), thread)
+
+    assert db.get_order("ORD1003", 2)["refund_status"] is None
+    reply = state["messages"][-1].content
+    assert "not approved" in reply
+    assert "no proof" in reply
+
+
+def test_approval_issues_exactly_one_refund(thread):
+    """
+    The node restarts on resume, so everything above interrupt() runs twice.
+    This is the test that fails if the write ever drifts above the interrupt:
+    refunded_at would be rewritten, or a non-idempotent write would double up.
+    """
+    send(thread, "rohit.v@example.com")
+    send(thread, "please refund ORD1003")
+    graph.invoke(Command(resume=True), thread)
+
+    order = db.get_order("ORD1003", 2)
+    first_stamp = order["refunded_at"]
+    assert order["refund_status"] == "Refunded"
+    # A second approval on a settled order must change nothing.
+    assert db.refund_order("ORD1003", 2) == 0
+    assert db.get_order("ORD1003", 2)["refunded_at"] == first_stamp
+
+
+def test_damaged_item_claim_escalates_even_when_cheap(thread):
+    """
+    ORD1006 is Rs 2,499, comfortably under the threshold, so value alone would
+    auto-approve it. A damage claim carries fraud risk and goes to a human
+    anyway.
+    """
+    send(thread, "ananya.s@example.com")
+    state = send(thread, "ORD1006 arrived damaged, please refund it")
+
+    assert "__interrupt__" in state
+    assert "damaged" in state["__interrupt__"][0].value["reason"]
+    assert db.get_order("ORD1006", 1)["refund_status"] is None
+
+
+def test_ordinary_cheap_refund_does_not_pause(thread):
+    send(thread, "ananya.s@example.com")
+    state = send(thread, "please refund ORD1006")
+
+    assert "__interrupt__" not in state
+    assert db.get_order("ORD1006", 1)["refund_status"] == "Refunded"
+
+
+def test_unrecognised_decision_is_treated_as_denial():
+    """Anything that isn't a clear approval must not move money."""
+    from agents import normalize_decision
+
+    assert normalize_decision({"approved": True}) == (True, "")
+    assert normalize_decision(True) == (True, "")
+    assert normalize_decision("approve")[0] is True
+    assert normalize_decision("deny")[0] is False
+    assert normalize_decision(None)[0] is False
+    assert normalize_decision("")[0] is False
+    assert normalize_decision({"note": "looks fine"})[0] is False
+
+
+def test_approval_arguments_are_not_model_fillable():
+    """An LLM must not be able to approve its own refund."""
+    assert "approved" not in process_refund.args
+    assert "customer_id" not in process_refund.args

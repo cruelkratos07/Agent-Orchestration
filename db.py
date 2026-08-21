@@ -93,6 +93,7 @@ def init_db():
                 ("ORD1004", 3, "Smart Fitness Watch V2",     3499.00,  "Shipped",    "Ekart",     "1 day",               "2026-07-21"),
                 ("ORD1005", 2, "USB-C Fast Charger 65W",     1999.00,  "Cancelled",  None,        None,                  "2026-07-10"),
                 ("ORD1006", 1, "Bluetooth Speaker Mini",     2499.00,  "Delivered",  "Delhivery", "Delivered 2026-07-19", "2026-07-12"),
+                ("ORD1007", 3, "Laptop Cooling Pad",         1899.00,  "Delivered",  "Ekart",     "Delivered 2026-07-17", "2026-07-11"),
             ],
         )
 

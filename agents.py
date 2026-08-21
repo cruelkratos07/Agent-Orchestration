@@ -13,9 +13,12 @@ so the whole graph stays runnable and demoable without live API calls.
 import os
 import re
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import interrupt
 from state import AgentState, last_user_text, specialists_used
+import db
 from tools import (
     check_order_status,
+    escalation_reason,
     list_my_orders,
     lookup_return_policy,
     process_refund,
@@ -147,37 +150,107 @@ def policy_node(state: AgentState) -> dict:
     return {"messages": [AIMessage(content=result, name="policy_agent")]}
 
 
+def normalize_decision(decision) -> tuple:
+    """
+    Accept whatever the approver sent and reduce it to (approved, note).
+
+    A dict is the real shape a frontend would post. A bare bool or the strings
+    "approve"/"deny" are tolerated so the decision can be typed by hand in a
+    demo or a test without ceremony. Anything unrecognised is treated as NOT
+    approved: the safe default for something that moves money.
+    """
+    if isinstance(decision, dict):
+        return bool(decision.get("approved")), str(decision.get("note", ""))
+    if isinstance(decision, bool):
+        return decision, ""
+    if isinstance(decision, str):
+        return decision.strip().lower() in ("approve", "approved", "yes", "y"), ""
+    return False, ""
+
+
 def refund_node(state: AgentState) -> dict:
     """
-    Refund specialist. The first node in this project that WRITES.
+    Refund specialist, with human-in-the-loop approval (Phase 6).
 
-    Identity comes from verified state, exactly as it does for order_lookup -
-    a refund is gated by the same check that gates a read. The extra safety on
-    a write is the value threshold in tools.process_refund, which flags large
-    refunds for a human instead of issuing them.
+    Identity comes from verified state, exactly as it does for order_lookup.
+    The extra safety on a write is the approval gate, not a stronger identity
+    check.
+
+    ORDERING RULE - the thing that makes this correct:
+
+      Everything before interrupt() runs a SECOND time when the graph resumes,
+      because the node restarts rather than continuing from where it paused.
+      Verified by spike: a counter placed above interrupt() incremented twice
+      for one approval.
+
+      So everything above the interrupt is a pure read, and the write is
+      strictly below it. Put db.refund_order() above the interrupt and one
+      approval issues two refunds - which the idempotent UPDATE would absorb,
+      hiding the bug rather than surfacing it.
     """
     customer_id = state["customer_id"]          # verified, trusted
     text = last_user_text(state)
 
     order_match = re.search(r"ORD\d+", text.upper())
     if not order_match:
-        return {
-            "messages": [
-                AIMessage(
-                    content=(
-                        "Which order would you like refunded? "
-                        "Please share the order ID."
-                    ),
-                    name="refund_agent",
-                )
-            ]
+        return _refund_reply(
+            "Which order would you like refunded? Please share the order ID."
+        )
+    order_id = order_match.group(0)
+
+    # --- reads only, above the interrupt: safe to run twice ---
+    order = db.get_order(order_id, customer_id)
+    if order is None or order["refund_status"] == "Refunded" or \
+            order["status"] not in db.REFUNDABLE_STATUSES:
+        # Nothing to decide. Let the tool produce the explanation.
+        return _refund_reply(
+            process_refund.invoke(
+                {"order_id": order_id, "customer_id": customer_id, "reason": text}
+            )
+        )
+
+    reason = escalation_reason(order, text)
+    if not reason:
+        return _refund_reply(
+            process_refund.invoke(
+                {"order_id": order_id, "customer_id": customer_id, "reason": text}
+            )
+        )
+
+    # --- pause the graph and wait for a person ---
+    decision = interrupt(
+        {
+            "type": "refund_approval",
+            "order_id": order["order_id"],
+            "item": order["item"],
+            "amount": order["amount"],
+            "customer_id": customer_id,
+            "customer_name": state.get("customer_name"),
+            "reason": reason,
+            "customer_request": text,
         }
+    )
+    approved, note = normalize_decision(decision)
+
+    # --- writes only, below the interrupt ---
+    if not approved:
+        suffix = f" Reviewer note: {note}" if note else ""
+        return _refund_reply(
+            f"Refund for {order['order_id']} was reviewed and not approved "
+            f"({reason}). Nothing has been charged back.{suffix}"
+        )
 
     result = process_refund.invoke(
         {
-            "order_id": order_match.group(0),
+            "order_id": order_id,
             "customer_id": customer_id,
+            "approved": True,
             "reason": text,
         }
     )
-    return {"messages": [AIMessage(content=result, name="refund_agent")]}
+    suffix = f" Approved by a reviewer ({reason}).{(' Note: ' + note) if note else ''}"
+    return _refund_reply(result + suffix)
+
+
+def _refund_reply(content: str) -> dict:
+    return {"messages": [AIMessage(content=content, name="refund_agent")]}

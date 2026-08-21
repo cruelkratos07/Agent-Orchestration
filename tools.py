@@ -20,10 +20,33 @@ from typing import Annotated
 from langchain_core.tools import InjectedToolArg, tool
 import db
 
-# Refunds at or above this value are flagged for a human rather than issued.
-# Kept as one named constant because Phase 6 turns this exact branch into an
-# interrupt() - the condition does not change, only the mechanism.
+# Refunds at or above this value need a human to approve them. Phase 6 turns
+# this into a graph interrupt; the condition is unchanged from Phase 4.
 REFUND_APPROVAL_THRESHOLD = 5000.0
+
+# Words that make a refund a judgement call regardless of value. A damage claim
+# carries fraud risk, so it goes to a human even when the amount is small.
+ESCALATION_KEYWORDS = ("damaged", "broken", "faulty", "defective")
+
+
+def escalation_reason(order: dict, request_text: str = "") -> str:
+    """
+    Why this refund needs a human, or "" if it can be auto-approved.
+
+    Pure and side-effect free on purpose: refund_node calls this BEFORE
+    interrupt(), and everything before an interrupt runs a second time when the
+    graph resumes. Anything with a side effect must sit after the interrupt.
+    """
+    if order["amount"] >= REFUND_APPROVAL_THRESHOLD:
+        return (
+            f"Rs {order['amount']:.0f} is at or above the "
+            f"Rs {REFUND_APPROVAL_THRESHOLD:.0f} auto-approval limit"
+        )
+    lowered = (request_text or "").lower()
+    for word in ESCALATION_KEYWORDS:
+        if word in lowered:
+            return f"customer reports the item was {word}"
+    return ""
 
 
 @tool
@@ -102,6 +125,7 @@ def lookup_return_policy(topic: str) -> str:
 def process_refund(
     order_id: str,
     customer_id: Annotated[int, InjectedToolArg],
+    approved: Annotated[bool, InjectedToolArg] = False,
     reason: str = "",
 ) -> str:
     """Issue a refund for one of this customer's delivered orders.
@@ -125,9 +149,11 @@ def process_refund(
             f"delivered orders can be refunded. No refund was issued."
         )
 
-    # Checked BEFORE the write, so a flagged refund leaves the database
-    # untouched. In Phase 6 this branch becomes interrupt().
-    if order["amount"] >= REFUND_APPROVAL_THRESHOLD:
+    # Belt and braces. refund_node decides escalation and obtains approval
+    # before calling this, but the tool refuses a high-value write on its own
+    # authority anyway. `approved` is an InjectedToolArg, so an LLM cannot set
+    # it - the same reasoning that protects customer_id.
+    if order["amount"] >= REFUND_APPROVAL_THRESHOLD and not approved:
         return (
             f"Refund of Rs {order['amount']:.0f} for {order['order_id']} is "
             f"above the Rs {REFUND_APPROVAL_THRESHOLD:.0f} auto-approval "

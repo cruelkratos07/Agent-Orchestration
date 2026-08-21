@@ -72,4 +72,18 @@ def build_graph():
     return builder.compile(checkpointer=InMemorySaver())
 
 
+def pending_approval(compiled_graph, config):
+    """
+    The approval a thread is waiting on, or None.
+
+    Phase 7's escalation queue is this called across threads. Kept here rather
+    than in the frontend so the payload shape has one owner.
+    """
+    snapshot = compiled_graph.get_state(config)
+    for task in snapshot.tasks:
+        for pending in task.interrupts:
+            return pending.value
+    return None
+
+
 graph = build_graph()
