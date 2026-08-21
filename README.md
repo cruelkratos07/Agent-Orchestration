@@ -22,15 +22,27 @@ This project solves that structurally instead.
 | SQL injection through LLM output | Every query is parameterized. No f-strings or concatenation against any input. |
 | Order IDs misread as customer IDs | Identifier extraction is deliberately narrow; `ORD1002` cannot be parsed as customer 1002 (regression-tested). |
 | LLM choosing its own `customer_id` | `customer_id` is an `InjectedToolArg`, so it is absent from the tool schema the model sees. The model cannot name a customer even once tools are bound to it. |
+| Cross-account **mutation** | The refund `UPDATE` carries `customer_id` in its own `WHERE` clause. Ownership is not checked by a preceding `SELECT`, so there is no time-of-check/time-of-use gap. |
+| Double refunds | `status` and `refund_status` are in the `UPDATE`'s `WHERE` clause, so a repeat attempt changes zero rows. Idempotency is enforced by the statement, not by a re-read. |
+| A turn looping forever | Three independent stops: a refund is terminal, a specialist answers at most once per turn, and a hard cap of 3 hops. An unbounded loop-back raises `GraphRecursionError`, so this is not optional. |
 
 ## Architecture
 
 ```
-START -> verify -> [verified?] -> supervisor -> order_lookup -> END
-                        |                    \
-                        |                     -> policy      -> END
+START -> verify -> [verified?] -> supervisor -> order_lookup --+
+                        |                    |-> policy ------+
+                        |                    |-> refund ------+
+                        |                    |                |
+                        |                    +<---------------+
+                        |                    |
+                        |                    +-- FINISH --> END
                         +-- not verified --> END (asks for identity)
 ```
+
+Specialists hand control back to the supervisor rather than ending the turn,
+so one message can require several of them. `"my camera ORD1003 arrived
+damaged, I want a refund"` runs **policy** (what the damaged-item rule
+allows), then **refund** (act on it), then the supervisor closes the turn.
 
 - **verify** - resolves customer ID / email / phone against the database.
   Only place `customer_id` is ever written.
@@ -39,6 +51,8 @@ START -> verify -> [verified?] -> supervisor -> order_lookup -> END
 - **order_lookup** - order status and order listing. Reads `customer_id`
   from verified state, never from user text.
 - **policy** - returns/refunds/exchanges. Needs no identity.
+- **refund** - issues refunds. The only node that writes. Refunds at or above
+  Rs 5,000 are flagged for a human instead of being issued.
 
 ## Stack
 
@@ -48,7 +62,7 @@ START -> verify -> [verified?] -> supervisor -> order_lookup -> END
 - **LLM:** Anthropic Claude for intent routing (with a keyword-based
   test mode so the system runs without API keys)
 - **Database:** SQLite, fully parameterized queries
-- **Tests:** pytest, 14 tests covering the security invariants
+- **Tests:** pytest, 28 tests covering the security and termination invariants
 
 ## Running it
 
@@ -76,9 +90,14 @@ python -m pytest tests/ -q
 
 | Customer | Email | Phone | Orders |
 |---|---|---|---|
-| 1 Ananya Sharma | ananya.s@example.com | +919876543210 | ORD1001, ORD1002 |
+| 1 Ananya Sharma | ananya.s@example.com | +919876543210 | ORD1001, ORD1002, ORD1006 |
 | 2 Rohit Verma | rohit.v@example.com | +919812345678 | ORD1003, ORD1005 |
 | 3 Meera Nair | meera.n@example.com | +919900112233 | ORD1004 |
+
+Order states matter now that refunds exist: only **Delivered** orders are
+refundable. ORD1006 (Rs 2,499, customer 1) is below the approval threshold and
+refunds automatically; ORD1003 (Rs 12,999, customer 2) is above it and gets
+flagged for a human. Both sides of that branch are reachable on purpose.
 
 Try verifying as customer 1, then asking for ORD1003 - it belongs to
 customer 2 and will not be returned.
@@ -91,6 +110,7 @@ specialist still sees the original question, not the verification reply.
 
 ```
 pyproject.toml - pytest config (pythonpath, testpaths)
+docs/        - Phase 2 audit and Phase 4 design notes
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
 verify.py    - identity extraction + verification gate
@@ -105,8 +125,10 @@ tests/       - security invariant tests (test_security.py)
 
 - [x] Phase 1 - supervisor delegation, specialist agents, tool isolation
 - [x] Phase 2 - real database, identity verification, security tests
+- [x] Phase 4 - multi-step delegation; refund processing specialist
 - [ ] Phase 3 - semantic memory (ChromaDB) for recall of similar past queries
-- [ ] Phase 4 - multi-step delegation; refund processing specialist
+      (deferred: recalling how a similar past ticket was resolved is a real
+      use for embeddings; choosing between three route labels is not)
 - [ ] Phase 5 - async execution (Celery + Redis) for slow external calls
 - [ ] Phase 6 - human-in-the-loop escalation for high-value refunds
 - [ ] Phase 7 - React frontend with agent activity and escalation queue

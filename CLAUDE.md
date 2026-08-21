@@ -23,7 +23,7 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 2 complete (+ correctness pass)
+## Status: Phase 4 complete
 Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
 
@@ -51,10 +51,11 @@ Files:
                + last_user_text() helper
 - verify.py  — identifier extraction + verification gate
 - tools.py   — customer-scoped order tools, public policy tool
-- agents.py  — supervisor_node, order_lookup_node, policy_node
+- agents.py  — supervisor_node, order_lookup_node, policy_node, refund_node
 - graph.py   — StateGraph wiring with verify gate in front, InMemorySaver
 - main.py    — 5 multi-turn demo conversations (thread_id based)
-- tests/     — 14 pytest security invariant tests
+- tests/     — 28 pytest security + termination tests (hermetic temp DB)
+- docs/      — phase2-audit.md, phase4-design.md
 
 SECURITY INVARIANTS (do not break these — they are tested):
 1. customer_id is WRITE-ONCE, set only by verify_node after a DB lookup.
@@ -67,16 +68,43 @@ SECURITY INVARIANTS (do not break these — they are tested):
    InjectedToolArg — the caller supplies it from verified state, never the
    model. This is what makes invariant 1 structural rather than a convention
    held up by agents.py.
+7. Every turn terminates. No turn may raise GraphRecursionError.
+8. A refund applies at most once per order; a repeat attempt changes 0 rows.
+9. Refund writes are scoped by customer_id in the UPDATE statement itself,
+   never by a preceding read (no time-of-check/time-of-use gap).
 
-Known Phase 2 limitation (by design): specialists go straight to END,
-no looping back to supervisor for multi-step tasks. That's Phase 4.
+PHASE 4 (done): specialists edge back to supervisor, not END, so one turn
+can use several. New refund specialist - the only node that writes.
+
+Termination rules (all three tested, do not remove any of them):
+  1. A refund is terminal for the turn.
+  2. A specialist answers at most once per turn.
+  3. MAX_SPECIALIST_HOPS = 3 is a hard backstop.
+An unbounded loop-back raises GraphRecursionError, it does not hang.
+
+"What ran this turn" is DERIVED from messages since the last HumanMessage
+(state.specialists_used), NOT stored in state. A counter in state persists
+across turns on the same thread_id and would need a per-turn reset; forget it
+and turn 2 of every conversation starts at the cap and silently does nothing.
+Deriving it makes that bug impossible. Don't "simplify" this into a counter.
+
+Refund rules: only Delivered orders are refundable. Refunds >= Rs 5,000
+(REFUND_APPROVAL_THRESHOLD in tools.py) are flagged for a human rather than
+issued, and the check runs BEFORE the write so the DB is untouched. Phase 6
+turns that exact branch into interrupt().
+
+Seed data note: only Delivered orders are refundable, and the original seed
+had exactly one Delivered order and it was above the threshold - auto-approval
+was dead code. ORD1006 (Delivered, Rs 2,499) exists so both sides of the
+branch are reachable. A test fails if a future seed edit breaks that.
 
 ## Roadmap
 2. DONE — real DB + identity verification
-3. ChromaDB — embed past queries, let supervisor pull similar past
-   cases before routing a new one
-4. Real multi-step delegation — sub-agent can hand back to supervisor
-   instead of always ending the turn; add Refund Processing specialist
+4. DONE — real multi-step delegation + Refund Processing specialist
+3. ChromaDB — DEFERRED, and reordered after 4 deliberately. Embeddings to
+   choose between three route labels is a vector DB doing work a keyword
+   match already does. Revisit when the use is recalling how a similar past
+   ticket was RESOLVED, which is a real use for it.
 5. Celery + Redis — async execution for slow tool calls
 6. Human-in-the-loop escalation — trigger on: refund above a rupee
    threshold, damaged-item claims, order not found. Pause the graph,

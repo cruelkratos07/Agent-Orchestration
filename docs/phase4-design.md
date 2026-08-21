@@ -1,6 +1,7 @@
 # Phase 4 Design — Real Multi-Step Delegation + Refund Specialist
 
-**Status:** design only, no code written.
+**Status:** IMPLEMENTED. See "As built" at the end for the three places
+the implementation deviated from this design, and why.
 **Prerequisite:** the Phase 2 correctness pass (`pyproject.toml` present,
 `pytest tests/ -q` = 14 passed). Phase 4 depends on `InjectedToolArg` and the
 checkpointer from that pass.
@@ -290,3 +291,65 @@ Verified against `langgraph==1.2.9`, Python 3.11:
 - A node returning a key not present in the state schema is **silently
   ignored** — no error. So a typo'd key in a node's return dict is an invisible
   no-op. Relevant when adding `steps` to several return sites.
+
+
+---
+
+## As built — deviations from this design
+
+Three things changed once the code met reality. Each is a case where the design
+was workable but the implementation found something better or something wrong.
+
+### 1. No `steps` field. Progress is derived from messages.
+
+§3b/§3c specified a `steps: int` in `AgentState`, reset per turn in
+`verify_node`. Implemented instead as `state.specialists_used(state)`, which
+reads the messages appended since the last `HumanMessage`.
+
+Reason: §3c documented that a counter in state persists across turns on the
+same `thread_id` and therefore needs a per-turn reset. Rather than add the
+reset and a test to catch its absence, deriving the value removes the failure
+mode altogether — the window resets itself when a new user message arrives.
+The `steps` field would have been a second source of truth for something the
+message history already records exactly.
+
+This also subsumes §4, which wanted the supervisor to know *which* specialists
+had run: the derived list answers both questions at once.
+
+### 2. Termination has three rules, not one plus a cap.
+
+The design had the supervisor deciding `FINISH` plus a step cap. Implemented
+with a third, stronger rule in the middle: **a specialist answers at most once
+per turn**. With three specialists that alone bounds a turn, which means
+termination no longer depends on the supervisor being right — the cap became a
+genuine backstop rather than the primary defence. A refund being terminal is
+the third rule, and it is what keeps the acceptance scenario at exactly two
+hops instead of picking up a spurious `order_lookup` third hop from the
+`ORD1003` in the user's text.
+
+### 3. The seed data could not exercise both sides of the threshold.
+
+Not a deviation so much as a defect the design missed. With "Delivered only"
+and a Rs 5,000 threshold — both chosen deliberately — the seed data contained
+exactly **one** delivered order, ORD1003 at Rs 12,999, above the threshold.
+Auto-approval was unreachable: dead code with a passing test suite.
+
+Fixed by adding ORD1006 (customer 1, Delivered, Rs 2,499), plus
+`test_seed_data_exercises_both_sides_of_the_threshold`, which fails if a future
+seed edit makes either branch unreachable again. Worth noting the general
+shape: a policy decision and a data fixture that are individually reasonable
+can still combine into an untestable branch.
+
+§5 also said "delete `support.db` and let it re-seed" rather than migrate.
+Implemented as an idempotent `ALTER TABLE ... ADD COLUMN` in `init_db()`
+instead — five lines, and it turns a confusing `no such column` crash on an
+existing database into a no-op. Still not a migration system.
+
+### Bonus fix, not in the design
+
+`lookup_return_policy` receives the customer's whole sentence, so exact phrase
+matching almost never landed: "my camera arrived damaged, I want a refund"
+contains neither "damaged item" nor "refund window" and fell through to the
+generic answer. This was pre-existing but Phase 4 put it in the flagship demo,
+where a damage claim being answered with the generic refund window is
+conspicuous. Keyword fallback is now ordered so "damaged" outranks "refund".
