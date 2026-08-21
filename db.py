@@ -16,9 +16,16 @@ is not optional.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "support.db"
+
+# Only a delivered order can be refunded. This mirrors the policy text in
+# tools.lookup_return_policy ("within 15 days of delivery"). A Shipped order
+# would be a cancel-in-transit, which is a different operation; a Cancelled
+# order is already refunded by another path.
+REFUNDABLE_STATUSES = ("Delivered",)
 
 
 def get_connection():
@@ -51,9 +58,19 @@ def init_db():
             carrier      TEXT,
             eta          TEXT,
             ordered_on   TEXT NOT NULL,
+            refund_status TEXT,
+            refunded_at   TEXT,
             FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
         )
     """)
+
+    # Older support.db files predate the refund columns. Adding them here keeps
+    # init_db() safe to run against an existing database instead of failing
+    # with an opaque "no such column" later.
+    existing = {row["name"] for row in cur.execute("PRAGMA table_info(orders)")}
+    for column in ("refund_status", "refunded_at"):
+        if column not in existing:
+            cur.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT")
 
     # Seed only if empty, so re-running doesn't duplicate rows
     if cur.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 0:
@@ -75,6 +92,7 @@ def init_db():
                 ("ORD1003", 2, "Ultra HD Action Camera 4K", 12999.00,  "Delivered",  "BlueDart",  "Delivered 2026-07-20", "2026-07-15"),
                 ("ORD1004", 3, "Smart Fitness Watch V2",     3499.00,  "Shipped",    "Ekart",     "1 day",               "2026-07-21"),
                 ("ORD1005", 2, "USB-C Fast Charger 65W",     1999.00,  "Cancelled",  None,        None,                  "2026-07-10"),
+                ("ORD1006", 1, "Bluetooth Speaker Mini",     2499.00,  "Delivered",  "Delhivery", "Delivered 2026-07-19", "2026-07-12"),
             ],
         )
 
@@ -149,3 +167,41 @@ def list_orders(customer_id: int):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def refund_order(order_id: str, customer_id: int) -> int:
+    """
+    Mark an order refunded. Returns the number of rows changed.
+
+    Everything that makes this safe is in the single UPDATE statement:
+
+      * customer_id is in the WHERE clause of the WRITE itself, not checked by
+        a preceding SELECT. Reading to verify ownership and then updating by
+        order_id alone would be a time-of-check/time-of-use hole, and is one
+        careless refactor away from dropping the check entirely.
+      * status and refund_status are in the WHERE clause too, which is what
+        makes this idempotent. A second attempt matches no rows and returns 0
+        instead of refunding twice. Callers distinguish the two cases by the
+        return value, not by re-reading the row.
+    """
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in REFUNDABLE_STATUSES)
+    cur = conn.execute(
+        f"""UPDATE orders
+               SET refund_status = 'Refunded',
+                   refunded_at   = ?
+             WHERE UPPER(order_id) = UPPER(?)
+               AND customer_id = ?
+               AND status IN ({placeholders})
+               AND (refund_status IS NULL OR refund_status != 'Refunded')""",
+        (
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            order_id.strip(),
+            customer_id,
+            *REFUNDABLE_STATUSES,
+        ),
+    )
+    conn.commit()
+    changed = cur.rowcount
+    conn.close()
+    return changed

@@ -6,7 +6,12 @@ import pytest
 from langchain_core.messages import HumanMessage
 import db
 from graph import graph
-from tools import check_order_status, list_my_orders
+from tools import (
+    REFUND_APPROVAL_THRESHOLD,
+    check_order_status,
+    list_my_orders,
+    process_refund,
+)
 from verify import extract_identifier
 
 
@@ -49,7 +54,7 @@ def test_customer_cannot_read_another_customers_order():
 
 def test_list_orders_is_scoped():
     ids = {o["order_id"] for o in db.list_orders(1)}
-    assert ids == {"ORD1001", "ORD1002"}
+    assert ids == {"ORD1001", "ORD1002", "ORD1006"}
 
 
 # --- graph-level invariants ---
@@ -121,3 +126,80 @@ def test_supervisor_route_normalization():
     assert normalize_route("The category is order_lookup") == "order_lookup"
     assert normalize_route("banana") == "FINISH"
     assert normalize_route("") == "FINISH"
+
+
+# --- phase 4: refund write path ---
+
+def test_refund_marks_the_order_refunded():
+    assert db.refund_order("ORD1006", 1) == 1
+    assert db.get_order("ORD1006", 1)["refund_status"] == "Refunded"
+
+
+def test_refund_is_idempotent():
+    assert db.refund_order("ORD1006", 1) == 1
+    assert db.refund_order("ORD1006", 1) == 0      # second attempt changes nothing
+
+
+def test_refund_cannot_touch_another_customers_order():
+    # ORD1006 belongs to customer 1. Customer 2 must not be able to refund it.
+    assert db.refund_order("ORD1006", 2) == 0
+    assert db.get_order("ORD1006", 1)["refund_status"] is None
+
+
+def test_only_delivered_orders_are_refundable():
+    assert db.refund_order("ORD1002", 1) == 0      # Processing
+    assert db.refund_order("ORD1005", 2) == 0      # Cancelled
+
+
+def test_high_value_refund_is_flagged_not_processed():
+    """
+    ORD1003 is Rs 12,999, above the threshold. It must be flagged for a human
+    and the database must be untouched. In Phase 6 this branch becomes
+    interrupt(); the condition is identical, only the mechanism changes.
+    """
+    result = process_refund.invoke({"order_id": "ORD1003", "customer_id": 2})
+    assert "human" in result.lower()
+    assert db.get_order("ORD1003", 2)["refund_status"] is None
+
+
+def test_low_value_refund_is_processed():
+    result = process_refund.invoke({"order_id": "ORD1006", "customer_id": 1})
+    assert "Refund of Rs 2499" in result
+    assert db.get_order("ORD1006", 1)["refund_status"] == "Refunded"
+
+
+def test_refund_customer_id_is_not_model_fillable():
+    assert "customer_id" not in process_refund.args
+    assert "order_id" in process_refund.args
+
+
+def test_seed_data_exercises_both_sides_of_the_threshold():
+    """
+    Guards the demo. Only DELIVERED orders are refundable, so it is not enough
+    for the seed amounts to straddle the threshold - there must be a delivered
+    order on each side, or one branch is unreachable. The original seed data
+    had exactly one delivered order and it was above the limit, which made
+    auto-approval dead code.
+    """
+    delivered = [
+        o["amount"]
+        for cid in (1, 2, 3)
+        for o in db.list_orders(cid)
+        if o["status"] in db.REFUNDABLE_STATUSES
+    ]
+    assert any(a < REFUND_APPROVAL_THRESHOLD for a in delivered), "no auto-approvable order"
+    assert any(a >= REFUND_APPROVAL_THRESHOLD for a in delivered), "no escalating order"
+
+
+def test_damaged_claim_gets_the_damaged_item_policy():
+    """
+    Regression: the topic arrives as the customer's whole sentence, so exact
+    phrase matching fell through to the generic answer. "damaged" must also
+    outrank "refund" when both appear, or a damage claim is answered with the
+    plain refund window.
+    """
+    from tools import lookup_return_policy
+    result = lookup_return_policy.invoke(
+        {"topic": "my action camera ORD1003 arrived damaged, I want a refund"}
+    )
+    assert "7 days" in result and "photo proof" in result

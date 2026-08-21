@@ -20,6 +20,11 @@ from typing import Annotated
 from langchain_core.tools import InjectedToolArg, tool
 import db
 
+# Refunds at or above this value are flagged for a human rather than issued.
+# Kept as one named constant because Phase 6 turns this exact branch into an
+# interrupt() - the condition does not change, only the mechanism.
+REFUND_APPROVAL_THRESHOLD = 5000.0
+
 
 @tool
 def check_order_status(
@@ -73,4 +78,71 @@ def lookup_return_policy(topic: str) -> str:
     for key, value in policies.items():
         if key in topic_key or topic_key in key:
             return value
+
+    # The topic arrives as the customer's whole sentence, so an exact phrase
+    # match almost never lands: "my camera arrived damaged, I want a refund"
+    # contains neither "damaged item" nor "refund window". Fall back to single
+    # keywords, most specific first - "damaged" must win over "refund" here,
+    # or a damaged-item claim gets answered with the generic refund window.
+    keyword_priority = (
+        ("damaged", "damaged item"),
+        ("exchange", "exchange"),
+        ("cancel", "cancelled"),
+        ("refund", "refund window"),
+        ("return", "refund window"),
+    )
+    for keyword, key in keyword_priority:
+        if keyword in topic_key:
+            return policies[key]
+
     return "General policy: returns accepted within 15 days of delivery in original condition."
+
+
+@tool
+def process_refund(
+    order_id: str,
+    customer_id: Annotated[int, InjectedToolArg],
+    reason: str = "",
+) -> str:
+    """Issue a refund for one of this customer's delivered orders.
+    Use when the customer asks for their money back on a specific order."""
+    order = db.get_order(order_id, customer_id)
+    if not order:
+        return (
+            f"No order {order_id} found on this account, so there is nothing "
+            "to refund. Please double-check the order ID."
+        )
+
+    if order["refund_status"] == "Refunded":
+        return (
+            f"Order {order['order_id']} has already been refunded "
+            f"(on {order['refunded_at']}). No further action taken."
+        )
+
+    if order["status"] not in db.REFUNDABLE_STATUSES:
+        return (
+            f"Order {order['order_id']} is {order['status'].lower()}, and only "
+            f"delivered orders can be refunded. No refund was issued."
+        )
+
+    # Checked BEFORE the write, so a flagged refund leaves the database
+    # untouched. In Phase 6 this branch becomes interrupt().
+    if order["amount"] >= REFUND_APPROVAL_THRESHOLD:
+        return (
+            f"Refund of Rs {order['amount']:.0f} for {order['order_id']} is "
+            f"above the Rs {REFUND_APPROVAL_THRESHOLD:.0f} auto-approval "
+            "limit, so it needs a human to approve it. Nothing has been "
+            "charged back yet and the order is unchanged."
+        )
+
+    if db.refund_order(order_id, customer_id) == 0:
+        return (
+            f"Order {order['order_id']} could not be refunded - it may have "
+            "just been refunded already. Nothing was changed."
+        )
+
+    return (
+        f"Refund of Rs {order['amount']:.0f} issued for {order['order_id']} "
+        f"({order['item']}). It will reach the original payment method in "
+        "5-7 business days."
+    )
