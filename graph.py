@@ -10,6 +10,7 @@ START that skips it, which is what makes the guarantee structural:
 an order tool cannot be reached without passing verification first.
 """
 
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from state import AgentState
 from agents import supervisor_node, order_lookup_node, policy_node
@@ -23,11 +24,10 @@ def route_after_verify(state: AgentState) -> str:
 
 
 def route_from_supervisor(state: AgentState) -> str:
-    dest = state["next"]
-    if dest == "order_lookup":
-        return "order_lookup"
-    if dest == "policy":
-        return "policy"
+    # supervisor_node has already normalized this to a known route.
+    dest = state.get("next")
+    if dest in ("order_lookup", "policy"):
+        return dest
     return END
 
 
@@ -51,7 +51,11 @@ def build_graph():
     builder.add_edge("order_lookup", END)
     builder.add_edge("policy", END)
 
-    return builder.compile()
+    # A checkpointer persists state per thread_id, so a caller passes only the
+    # new message instead of re-threading the whole state dict. It is also a
+    # hard requirement for Phase 6: interrupt() pauses the graph by writing a
+    # checkpoint, and there is nothing to resume from without one.
+    return builder.compile(checkpointer=InMemorySaver())
 
 
 db.init_db()

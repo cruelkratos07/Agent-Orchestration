@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# Lets `python -m pytest tests/ -q` import the top-level modules (db, graph,
+# verify, ...) without a sys.path hack inside the test file.
+pythonpath = ["."]
+testpaths = ["tests"]

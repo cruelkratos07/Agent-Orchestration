@@ -19,7 +19,7 @@ edge checks `verified` before it checks anything else.
 
 import re
 from langchain_core.messages import AIMessage
-from state import AgentState
+from state import AgentState, last_user_text
 import db
 
 VERIFY_PROMPT = (
@@ -58,13 +58,18 @@ def verify_node(state: AgentState) -> dict:
     if state.get("verified"):
         return {}
 
-    user_text = state["messages"][-1].content
+    user_text = last_user_text(state)
     identifier = extract_identifier(user_text)
 
     if not identifier:
         return {
             "messages": [AIMessage(content=VERIFY_PROMPT, name="verification")],
             "verified": False,
+            # Stated explicitly rather than left absent, so every caller can
+            # read customer_id without a KeyError. Only reachable when not
+            # already verified, so this cannot clear an established identity.
+            "customer_id": None,
+            "customer_name": None,
         }
 
     customer = db.find_customer(identifier)
@@ -81,6 +86,8 @@ def verify_node(state: AgentState) -> dict:
                 )
             ],
             "verified": False,
+            "customer_id": None,
+            "customer_name": None,
         }
 
     # SUCCESS — this is the only place customer_id is ever written.

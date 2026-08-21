@@ -14,7 +14,7 @@ lookup, that attack has nowhere to enter the system.
 """
 
 from typing import Annotated, Optional, Sequence, TypedDict
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
 
@@ -33,3 +33,19 @@ class AgentState(TypedDict):
     # True once verification succeeds. The graph refuses to route to any
     # specialist while this is False.
     verified: bool
+
+
+def last_user_text(state) -> str:
+    """
+    The most recent thing the USER actually said.
+
+    Why this exists: verify_node appends an AIMessage ("you're verified"),
+    so `messages[-1]` is not the user's question on any turn where
+    verification just succeeded. A node that reads messages[-1] would
+    classify the confirmation text instead of the request, and silently
+    drop a message like "I'm customer 1, where is ORD1002?".
+    """
+    for message in reversed(state["messages"]):
+        if isinstance(message, HumanMessage):
+            return message.content
+    return ""

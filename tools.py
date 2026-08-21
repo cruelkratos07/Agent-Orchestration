@@ -5,16 +5,27 @@ KEY DESIGN CHANGE FROM PHASE 1:
 Every order tool takes customer_id as a required argument, and that
 value is scoped into the SQL query itself. A tool physically cannot
 return data belonging to a different customer, no matter what the
-LLM asks it for. Security lives in the tool signature, not in a prompt
-politely asking the model to behave.
+LLM asks it for.
+
+`customer_id` is marked InjectedToolArg, which removes it from the schema
+the LLM sees. The model cannot choose a customer_id even once these tools
+are bound to it (Phase 4) - the value can only be supplied by the caller,
+from verified state. Without this, the "security lives in the signature"
+claim would be false the moment llm.bind_tools() is introduced: the
+signature would be what EXPOSES the parameter to the model.
 """
 
-from langchain_core.tools import tool
+from typing import Annotated
+
+from langchain_core.tools import InjectedToolArg, tool
 import db
 
 
 @tool
-def check_order_status(order_id: str, customer_id: int) -> str:
+def check_order_status(
+    order_id: str,
+    customer_id: Annotated[int, InjectedToolArg],
+) -> str:
     """Look up the status of one specific order belonging to the given customer.
     Use when the customer names a specific order ID."""
     order = db.get_order(order_id, customer_id)
@@ -35,7 +46,7 @@ def check_order_status(order_id: str, customer_id: int) -> str:
 
 
 @tool
-def list_my_orders(customer_id: int) -> str:
+def list_my_orders(customer_id: Annotated[int, InjectedToolArg]) -> str:
     """List all orders on the given customer's account, newest first.
     Use when the customer asks about their orders without naming one."""
     orders = db.list_orders(customer_id)
