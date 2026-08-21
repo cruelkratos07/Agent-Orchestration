@@ -65,7 +65,11 @@ allows), then **refund** (act on it), then the supervisor closes the turn.
 - **LLM:** Anthropic Claude for intent routing (with a keyword-based
   test mode so the system runs without API keys)
 - **Database:** SQLite, fully parameterized queries
-- **Tests:** pytest, 37 tests covering the security, termination and approval invariants
+- **API:** FastAPI over the compiled graph, `SqliteSaver` so a pending approval
+  outlives a restart
+- **Frontend:** React + TypeScript (Vite), agent activity feed + escalation queue
+- **Tests:** pytest, 51 tests (37 core + 14 API) covering the security,
+  termination, approval and queue invariants
 
 ## Running it
 
@@ -88,6 +92,19 @@ Tests:
 ```bash
 python -m pytest tests/ -q
 ```
+
+Web console (optional - the CLI demo needs none of this):
+
+```bash
+pip install -r requirements-api.txt
+uvicorn api:app --reload                      # http://127.0.0.1:8000
+
+cd frontend && npm install && npm run dev     # http://127.0.0.1:5173
+```
+
+The console shows which specialist produced each line, and a queue of refunds
+paused for human approval across every conversation. Approving one resumes that
+graph exactly where it stopped.
 
 ## Sample data
 
@@ -113,7 +130,9 @@ specialist still sees the original question, not the verification reply.
 
 ```
 pyproject.toml - pytest config (pythonpath, testpaths)
-docs/        - Phase 2 audit, Phase 4 design, Phase 6 notes
+api.py       - FastAPI over the graph (threads, messages, escalation queue)
+frontend/    - React + TS console (Vite)
+docs/        - Phase 2 audit, Phase 4 design, Phase 6 and 7 notes
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
 verify.py    - identity extraction + verification gate
@@ -133,7 +152,7 @@ tests/       - security invariant tests (test_security.py)
 - [ ] Phase 3 - semantic memory (ChromaDB) for recall of similar past queries
       (deferred: recalling how a similar past ticket was resolved is a real
       use for embeddings; choosing between three route labels is not)
-- [ ] Phase 7 - React frontend with agent activity and escalation queue
+- [x] Phase 7 - React console: agent activity feed + escalation queue
 - [ ] Phase 5 - async execution (Celery + Redis), once a genuinely slow tool
       call exists to justify it
 

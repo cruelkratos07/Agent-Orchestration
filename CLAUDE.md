@@ -23,7 +23,7 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 6 complete
+## Status: Phase 7 complete
 Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
 
@@ -55,7 +55,20 @@ Files:
 - graph.py   — StateGraph wiring with verify gate in front, InMemorySaver
 - main.py    — 5 multi-turn demo conversations (thread_id based)
 - tests/     — 37 pytest security/termination/approval tests (hermetic temp DB)
-- docs/      — phase2-audit.md, phase4-design.md, phase6-notes.md
+- api.py     — FastAPI over the graph; GRAPH_LOCK serialises graph work
+- frontend/  — React + TS console (Vite); polls /api/escalations every 2s
+- docs/      — phase2-audit, phase4-design, phase6-notes, phase7-notes
+
+PHASE 7 gotchas:
+- /api/escalations/{id}/decide MUST 409 when the thread is not waiting.
+  Command(resume=...) on a thread that isn't paused drives it onward from
+  wherever it sits rather than failing — that is the two-reviewer race.
+- new_messages slicing differs per endpoint: a customer message appends a
+  HumanMessage the UI already rendered (skip 1); a resume appends none (skip 0).
+  Getting this wrong silently hides the refund reply.
+- build_graph(checkpointer=None) defaults to InMemorySaver and the sqlite
+  import is lazy, so `pip install -r requirements.txt && python main.py` keeps
+  working with no API extras. Keep it that way.
 
 SECURITY INVARIANTS (do not break these — they are tested):
 1. customer_id is WRITE-ONCE, set only by verify_node after a DB lookup.
@@ -129,11 +142,11 @@ branch are reachable. A test fails if a future seed edit breaks that.
    ticket was RESOLVED, which is a real use for it.
 6. DONE — human-in-the-loop escalation. Triggers: refund above the rupee
    threshold, damaged-item claims. Order-not-found deliberately excluded.
-7. NEXT — React frontend. The escalation queue is graph.pending_approval()
-   called across threads; the payload shape is already defined there. For a
-   real deployment swap InMemorySaver for SqliteSaver/PostgresSaver so a
-   pending approval survives a restart.
-5. Celery + Redis — still deferred. No genuinely slow tool call exists yet.
+7. DONE — FastAPI (api.py) + React/TS console (frontend/). Escalation queue is
+   list_thread_ids + pending_approval across threads. API uses SqliteSaver so a
+   pending approval survives a restart; CLI and tests still use InMemorySaver.
+5. Celery + Redis — STILL deferred, and the queue polling in the frontend is
+   the honest stand-in until a genuinely slow tool call exists to justify it.
 
 ## My conventions
 - Minimal diffs when editing existing code — don't restructure things
