@@ -114,6 +114,11 @@ if __name__ == "__main__":
         {"approved": True, "note": "photo proof checked"},
     ])
 
+    conversation("demo-11", "11. PHASE 8: fuzzy order reference, no API key needed", [
+        "ananya.s@example.com",
+        "where is my latest order?",
+    ])
+
     conversation("demo-10", "10. PHASE 6: damage claim under the limit still pauses, reviewer DENIES", [
         "meera.n@example.com",
         "ORD1007 arrived damaged, please refund it",
