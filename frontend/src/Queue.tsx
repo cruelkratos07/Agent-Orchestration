@@ -44,6 +44,9 @@ export default function Queue({ items, activeThread, onDecide, onOpen }: Props) 
               {item.customer_name} (#{item.customer_id})
             </p>
             <p className="card__reason">{item.reason}</p>
+            {item.risk_summary && item.risk_summary !== item.reason && (
+              <p className="card__brief">{item.risk_summary}</p>
+            )}
             <blockquote>“{item.customer_request}”</blockquote>
 
             <input

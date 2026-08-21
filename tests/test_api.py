@@ -95,6 +95,9 @@ def test_high_value_refund_appears_in_the_queue(client):
     assert queue[0]["thread_id"] == thread
     assert queue[0]["amount"] == 12999.0
     assert "auto-approval limit" in queue[0]["reason"]
+    # risk_summary is LLM-written with a key and mirrors reason without one,
+    # but the field must always be present for the UI to rely on.
+    assert queue[0]["risk_summary"]
 
 
 def test_queue_spans_multiple_conversations(client):

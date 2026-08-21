@@ -99,6 +99,10 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .card__head { display: flex; justify-content: space-between; font-size: 15px; }
 .card__item { margin: 6px 0 2px; }
 .card__reason { color: var(--warn); font-size: 12px; margin: 8px 0; }
+.card__brief {
+  margin: 8px 0; padding: 8px 10px; border-radius: 6px;
+  background: #16202b; color: #b9c7d6; font-size: 12px; line-height: 1.5;
+}
 .card blockquote {
   margin: 8px 0 12px; padding-left: 10px; border-left: 2px solid var(--line);
   color: var(--muted); font-size: 12px; line-height: 1.5;

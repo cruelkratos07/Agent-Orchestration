@@ -17,6 +17,9 @@ export interface Approval {
   customer_id: number
   customer_name: string | null
   reason: string
+  /** One-line brief for the reviewer. LLM-written when a key is set, otherwise
+   *  the same mechanical string as `reason`. */
+  risk_summary: string
   customer_request: string
 }
 
