@@ -16,6 +16,7 @@ const POLL_MS = 2000
 
 export default function App() {
   const [mode, setMode] = useState<string>('')
+  const [model, setModel] = useState<string>('')
   const [thread, setThread] = useState<ThreadView | null>(null)
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [busy, setBusy] = useState(false)
@@ -33,7 +34,9 @@ export default function App() {
   useEffect(() => {
     ;(async () => {
       try {
-        setMode((await api.health()).mode)
+        const health = await api.health()
+        setMode(health.mode)
+        setModel(health.model)
         const { thread_id } = await api.createThread()
         setThread({
           thread_id,
@@ -102,7 +105,12 @@ export default function App() {
       <header className="topbar">
         <h1>Order Support Console</h1>
         <div className="topbar__meta">
-          {mode && <span className="pill">{mode.replace('_', ' ')}</span>}
+          {mode && (
+            <span className="pill" title={model}>
+              {mode.replace('_', ' ')}
+              {model && model !== 'no model (deterministic mode)' && ` · ${model}`}
+            </span>
+          )}
           <button
             className="link"
             onClick={async () => {

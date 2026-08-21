@@ -29,6 +29,7 @@ TWO RULES THAT APPLY TO ALL OF THEM
 
 import os
 import re
+import sys
 from datetime import date, datetime, timezone
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -36,23 +37,175 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 import db
 from tools import check_order_status, list_my_orders
 
-TEST_MODE = os.environ.get("ANTHROPIC_API_KEY") is None
-MODEL_NAME = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+# --------------------------------------------------------------------------
+# Provider selection
+# --------------------------------------------------------------------------
+#
+# The project is provider-agnostic on purpose. Everything that makes it
+# interesting - the verify gate, customer-scoped tools, InjectedToolArg, the
+# approval interrupt - is langchain-core and LangGraph, not vendor-specific. So
+# the model is a swappable part, and saying so is more honest than pretending
+# one vendor is load-bearing.
+#
+# Pick one with LLM_PROVIDER, or set any provider's key and let it auto-detect.
+# LLM_MODEL overrides the model name for whichever provider is chosen.
+
+PROVIDERS = {
+    "gemini": {
+        "package": "langchain-google-genai",
+        "keys": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        "default_model": "gemini-3.5-flash",
+        "signup": "https://aistudio.google.com/apikey",
+    },
+    "groq": {
+        "package": "langchain-groq",
+        "keys": ("GROQ_API_KEY",),
+        "default_model": "llama-3.1-8b-instant",
+        "signup": "https://console.groq.com/keys",
+    },
+    "anthropic": {
+        "package": "langchain-anthropic",
+        "keys": ("ANTHROPIC_API_KEY",),
+        "default_model": "claude-sonnet-4-6",
+        "signup": "https://console.anthropic.com/settings/keys",
+    },
+    # Anything speaking the OpenAI wire format: OpenRouter, Cerebras, Together,
+    # a local Ollama or vLLM. Point OPENAI_BASE_URL at it.
+    "openai": {
+        "package": "langchain-openai",
+        "keys": ("OPENAI_API_KEY",),
+        "default_model": "gpt-4.1-mini",
+        "signup": "https://platform.openai.com/api-keys",
+    },
+}
+
+# Auto-detect order when LLM_PROVIDER is unset. Gemini first: its free tier is
+# the least friction for someone cloning this to try it.
+PROVIDER_ORDER = ("gemini", "groq", "anthropic", "openai")
+
+
+def _key_for(provider: str):
+    for name in PROVIDERS[provider]["keys"]:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def resolve_provider(env=None):
+    """
+    Which provider to use, or None to run deterministically.
+
+    Explicit LLM_PROVIDER wins, including "none" to force the no-model path
+    even when a key happens to be present in the environment. Otherwise the
+    first provider in PROVIDER_ORDER that has a key.
+    """
+    env = env if env is not None else os.environ
+    requested = (env.get("LLM_PROVIDER") or "").strip().lower()
+    if requested in ("none", "off", "test"):
+        return None
+    if requested:
+        if requested not in PROVIDERS:
+            raise ValueError(
+                f"Unknown LLM_PROVIDER {requested!r}. "
+                f"Choose one of: {', '.join(sorted(PROVIDERS))}, or 'none'."
+            )
+        return requested
+    for provider in PROVIDER_ORDER:
+        if any(env.get(name) for name in PROVIDERS[provider]["keys"]):
+            return provider
+    return None
+
+
+def model_name_for(provider: str, env=None) -> str:
+    env = env if env is not None else os.environ
+    return env.get("LLM_MODEL") or PROVIDERS[provider]["default_model"]
+
+
+PROVIDER = resolve_provider()
+TEST_MODE = PROVIDER is None
+MODEL_NAME = model_name_for(PROVIDER) if PROVIDER else None
 
 _model = None
+_warned = False
+
+
+def _build_model(provider: str):
+    """
+    Construct the chat model. Imports are lazy so no provider SDK is a hard
+    dependency - the core install has none of them and still runs.
+    """
+    name = model_name_for(provider)
+    if provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        return ChatGoogleGenerativeAI(
+            model=name, temperature=0, google_api_key=_key_for(provider)
+        )
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+
+        return ChatGroq(model=name, temperature=0, api_key=_key_for(provider))
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(model=name, temperature=0, api_key=_key_for(provider))
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=name,
+            temperature=0,
+            api_key=_key_for(provider),
+            base_url=os.environ.get("OPENAI_BASE_URL") or None,
+        )
+    raise ValueError(f"No builder for provider {provider!r}")
 
 
 def active_model():
-    """The chat model, or None when running without a key."""
-    global _model
+    """The chat model, or None when no provider is configured or usable."""
+    global _model, _warned
     if _model is not None:
         return _model
-    if TEST_MODE:
+    if PROVIDER is None:
         return None
-    from langchain_anthropic import ChatAnthropic
-
-    _model = ChatAnthropic(model=MODEL_NAME, temperature=0)
+    try:
+        _model = _build_model(PROVIDER)
+    except ImportError:
+        # A key is set but its SDK is not installed. Say so loudly ONCE, then
+        # degrade to the deterministic path rather than crashing the demo - a
+        # misconfiguration should not be worse than having no key at all.
+        if not _warned:
+            _warned = True
+            package = PROVIDERS[PROVIDER]["package"]
+            print(
+                f"[llm] {PROVIDER} key found but {package} is not installed. "
+                f"Run: pip install {package}  (falling back to keyword mode)",
+                file=sys.stderr,
+            )
+        return None
     return _model
+
+
+def live() -> bool:
+    """
+    True when a model is genuinely usable right now.
+
+    Distinct from `not TEST_MODE`, which only says a provider was CONFIGURED. A
+    key set without its SDK installed is configured but not usable, and a
+    banner claiming LIVE MODE in that state sends someone hunting for a bug in
+    the wrong place.
+    """
+    return active_model() is not None
+
+
+def describe() -> str:
+    """One line for logs and the /api/health payload."""
+    if PROVIDER is None:
+        return "no model (deterministic mode)"
+    if not live():
+        return f"{PROVIDER}:{MODEL_NAME} UNAVAILABLE - running deterministically"
+    return f"{PROVIDER}:{MODEL_NAME}"
 
 
 def use_model(model):

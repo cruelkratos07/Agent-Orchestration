@@ -50,7 +50,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; mode: string }>('/health'),
+  health: () => request<{ ok: boolean; mode: string; model: string }>('/health'),
   createThread: () => request<{ thread_id: string }>('/threads', { method: 'POST' }),
   getThread: (id: string) => request<ThreadView>(`/threads/${id}`),
   send: (id: string, text: string) =>

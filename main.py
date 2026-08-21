@@ -11,6 +11,7 @@ the state dict.
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 import db
+import llm
 from graph import graph
 from agents import TEST_MODE
 
@@ -65,7 +66,7 @@ if __name__ == "__main__":
     # Explicit, rather than a side effect of importing graph.py, so that tests
     # can point db.DB_PATH at a temp file before any table exists.
     db.init_db()
-    print(f"Running in {'TEST MODE' if TEST_MODE else 'LIVE MODE'}")
+    print(f"Running in {'LIVE MODE' if llm.live() else 'TEST MODE'} - {llm.describe()}")
 
     conversation("demo-1", "1. Unverified user is blocked, then verifies, then gets data", [
         "Where is my order ORD1002?",

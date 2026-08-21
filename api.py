@@ -24,6 +24,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 import db
+import llm
 from agents import TEST_MODE
 from graph import build_sqlite_graph, list_thread_ids, pending_approval
 
@@ -89,7 +90,11 @@ def thread_view(thread_id):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "mode": "TEST_MODE" if TEST_MODE else "LIVE_MODE"}
+    return {
+        "ok": True,
+        "mode": "LIVE_MODE" if llm.live() else "TEST_MODE",
+        "model": llm.describe(),
+    }
 
 
 @app.post("/api/threads", status_code=201)
