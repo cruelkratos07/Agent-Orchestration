@@ -9,6 +9,7 @@ the state dict.
 """
 
 from langchain_core.messages import HumanMessage
+import db
 from graph import graph
 from agents import TEST_MODE
 
@@ -19,13 +20,19 @@ def conversation(thread_id, title, turns):
 
     for turn in turns:
         print(f"\n  USER: {turn}")
+        before = len(graph.get_state(config).values.get("messages", []))
         state = graph.invoke({"messages": [HumanMessage(content=turn)]}, config)
-        last = state["messages"][-1]
-        print(f"  [{getattr(last, 'name', '?')}] {last.content}")
+        # Print every reply added this turn - a turn may now involve more than
+        # one specialist, so the last message alone no longer tells the story.
+        for message in state["messages"][before + 1:]:
+            print(f"  [{getattr(message, 'name', '?')}] {message.content}")
         print(f"     (verified={state['verified']}, customer_id={state['customer_id']})")
 
 
 if __name__ == "__main__":
+    # Explicit, rather than a side effect of importing graph.py, so that tests
+    # can point db.DB_PATH at a temp file before any table exists.
+    db.init_db()
     print(f"Running in {'TEST MODE' if TEST_MODE else 'LIVE MODE'}")
 
     conversation("demo-1", "1. Unverified user is blocked, then verifies, then gets data", [
@@ -51,4 +58,20 @@ if __name__ == "__main__":
 
     conversation("demo-5", "5. Identity AND question in a single message", [
         "Hi, I'm customer 1 - where is my order ORD1002?",
+    ])
+
+    conversation("demo-6", "6. PHASE 4: two specialists in one turn (policy, then refund)", [
+        "rohit.v@example.com",
+        "my action camera ORD1003 arrived damaged, I want a refund",
+    ])
+
+    conversation("demo-7", "7. PHASE 4: auto-approved refund, then the same refund again", [
+        "ananya.s@example.com",
+        "please refund ORD1006",
+        "please refund ORD1006",
+    ])
+
+    conversation("demo-8", "8. PHASE 4: only delivered orders are refundable", [
+        "meera.n@example.com",
+        "refund ORD1004 please",
     ])

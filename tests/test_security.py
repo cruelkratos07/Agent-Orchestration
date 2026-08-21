@@ -100,9 +100,10 @@ def test_identity_and_question_in_one_message_still_answers(convo):
     state = convo("I'm customer 1, where is my order ORD1002?")
     assert state["verified"] is True
     assert state["customer_id"] == 1
-    assert state["next"] == "order_lookup"
-    assert "ORD1002" in state["messages"][-1].content
-    assert state["messages"][-1].name == "order_agent"
+    # state["next"] is FINISH by the end of the turn: since Phase 4 the
+    # supervisor runs again after the specialist and closes the turn out.
+    replies = [m.content for m in state["messages"] if getattr(m, "name", None) == "order_agent"]
+    assert any("ORD1002" in r for r in replies)
 
 
 def test_customer_id_is_not_model_fillable():
@@ -126,6 +127,68 @@ def test_supervisor_route_normalization():
     assert normalize_route("The category is order_lookup") == "order_lookup"
     assert normalize_route("banana") == "FINISH"
     assert normalize_route("") == "FINISH"
+
+
+# --- phase 4: multi-step delegation ---
+
+def test_two_specialists_in_one_turn(convo):
+    """
+    The acceptance test for Phase 4. One user message, two specialists: policy
+    explains the damaged-item rule, then refund acts on it. This is impossible
+    in the Phase 2 topology, where every specialist edged straight to END.
+    """
+    convo("rohit.v@example.com")
+    state = convo("my action camera ORD1003 arrived damaged, I want a refund")
+    names = [getattr(m, "name", None) for m in state["messages"]]
+    assert "policy_agent" in names
+    assert "refund_agent" in names
+    assert names.index("policy_agent") < names.index("refund_agent")
+
+
+def test_turn_terminates_at_step_cap():
+    """
+    The step cap is a backstop independent of the supervisor's judgement. An
+    unbounded loop-back does not hang harmlessly - it raises
+    GraphRecursionError - so this must hold even if routing misfires.
+    """
+    from langchain_core.messages import AIMessage
+    from agents import MAX_SPECIALIST_HOPS, supervisor_node
+
+    messages = [HumanMessage(content="refund my order ORD1004")]
+    for name in ("order_agent", "policy_agent", "order_agent")[:MAX_SPECIALIST_HOPS]:
+        messages.append(AIMessage(content="...", name=name))
+
+    assert supervisor_node({"messages": messages})["next"] == "FINISH"
+
+
+def test_specialist_is_not_eligible_twice_in_one_turn():
+    """What actually bounds a normal turn: each specialist answers at most once."""
+    from langchain_core.messages import AIMessage
+    from agents import supervisor_node
+
+    state = {"messages": [
+        HumanMessage(content="what is the policy on a damaged item?"),
+        AIMessage(content="...", name="policy_agent"),
+    ]}
+    assert supervisor_node(state)["next"] != "policy"
+
+
+def test_refund_is_terminal_for_the_turn():
+    from langchain_core.messages import AIMessage
+    from agents import supervisor_node
+
+    state = {"messages": [
+        HumanMessage(content="refund ORD1004 and where is my other order"),
+        AIMessage(content="...", name="refund_agent"),
+    ]}
+    assert supervisor_node(state)["next"] == "FINISH"
+
+
+def test_test_mode_does_not_loop(convo):
+    """The no-API-key path must terminate too, or the demo never returns."""
+    convo("meera.n@example.com")
+    state = convo("refund ORD1004 please")          # would loop if unbounded
+    assert state["next"] == "FINISH"
 
 
 # --- phase 4: refund write path ---
