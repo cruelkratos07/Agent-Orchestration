@@ -23,7 +23,7 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 8 complete
+## Status: Phase 9 complete
 Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
 
@@ -73,6 +73,21 @@ PHASE 7 gotchas:
 
 PHASE 8 (done): every LLM call lives in llm.py. Four jobs beyond routing:
 resolve_order_reference, policy_answer, risk_summary, run_order_tools.
+
+PHASE 9 (done): provider-agnostic. LLM_PROVIDER picks one, or set any key and
+it auto-detects (order: gemini, groq, anthropic, openai). LLM_MODEL overrides
+the model name. LLM_PROVIDER=none forces deterministic mode even with a key.
+
+Provider SDKs are OPTIONAL deps (requirements-llm.txt) with lazy imports. Core
+install has none of them and still passes 69 tests + runs the demo.
+
+TEST_MODE vs live(): TEST_MODE means no provider was CONFIGURED; live() means a
+model is USABLE. They differ when a key is set but its SDK is missing - that
+case warns once to stderr and degrades. Banners and /api/health use live(),
+never TEST_MODE, or they lie in that state.
+
+Model IDs (gemini-3.5-flash, llama-3.1-8b-instant) are taken from what the
+installed SDKs reference. They WILL go stale - set LLM_MODEL, don't edit llm.py.
 
 TWO RULES for anything added to llm.py:
 1. EVERY function needs a deterministic fallback, taken on no-key, on

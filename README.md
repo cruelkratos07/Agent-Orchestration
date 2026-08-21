@@ -63,16 +63,18 @@ allows), then **refund** (act on it), then the supervisor closes the turn.
 - **Orchestration:** LangGraph (StateGraph, conditional edges, typed state
   with an `add_messages` reducer, `InMemorySaver` checkpointer keyed by
   `thread_id`)
-- **LLM:** Anthropic Claude for intent routing, fuzzy order resolution,
-  grounded policy answers, reviewer risk briefs, and real tool calling via
-  `bind_tools`. Every call has a deterministic fallback, so the whole system
-  still runs with no API key.
+- **LLM:** provider-agnostic - Gemini, Groq, Claude, or anything
+  OpenAI-compatible. Used for intent routing, fuzzy order resolution, grounded
+  policy answers, reviewer risk briefs, and real tool calling via `bind_tools`.
+  Every call has a deterministic fallback, so the whole system runs with no API
+  key at all.
 - **Database:** SQLite, fully parameterized queries
 - **API:** FastAPI over the compiled graph, `SqliteSaver` so a pending approval
   outlives a restart
 - **Frontend:** React + TypeScript (Vite), agent activity feed + escalation queue
-- **Tests:** pytest, 72 tests. The LLM paths are covered by a stub chat
-  model, so tool calling and every fallback run in CI without an API key.
+- **Tests:** pytest, 84 tests. The LLM paths are covered by a stub chat
+  model, so tool calling, provider selection and every fallback run in CI
+  without an API key.
 
 ## Running it
 
@@ -83,12 +85,23 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Runs in TEST MODE without an API key. For live LLM routing:
+Runs deterministically with no API key. To use a model, install one provider
+and set its key - nothing else to configure:
 
 ```bash
-export ANTHROPIC_API_KEY=your_key_here
-python main.py
+pip install langchain-google-genai      # Gemini free tier
+export GEMINI_API_KEY=...               # aistudio.google.com/apikey
+python main.py                          # -> LIVE MODE - gemini:gemini-3.5-flash
 ```
+
+Groq, Claude and any OpenAI-compatible endpoint (OpenRouter, Cerebras, local
+Ollama) work the same way - see `requirements-llm.txt`. `LLM_PROVIDER` picks
+one explicitly, `LLM_MODEL` overrides the model name, and `LLM_PROVIDER=none`
+forces the deterministic path even with a key present.
+
+Nothing about the security model is vendor-specific: `InjectedToolArg` is a
+`langchain-core` feature, so `customer_id` stays invisible to the model
+whichever provider is in use.
 
 Tests:
 
@@ -135,7 +148,7 @@ specialist still sees the original question, not the verification reply.
 pyproject.toml - pytest config (pythonpath, testpaths)
 api.py       - FastAPI over the graph (threads, messages, escalation queue)
 frontend/    - React + TS console (Vite)
-llm.py       - every place Claude is used, each with a deterministic fallback
+llm.py       - provider selection + every model call, each with a fallback
 docs/        - phase 2 audit, phase 4 design, phase 6/7/8 notes
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
@@ -159,6 +172,8 @@ tests/       - security invariant tests (test_security.py)
 - [x] Phase 7 - React console: agent activity feed + escalation queue
 - [x] Phase 8 - real LLM work: bound tools, fuzzy order refs, grounded policy
       answers, reviewer risk briefs
+- [x] Phase 9 - provider-agnostic model layer (Gemini / Groq / Claude /
+      OpenAI-compatible), runs free-tier or key-free
 - [ ] Phase 5 - async execution (Celery + Redis), once a genuinely slow tool
       call exists to justify it
 
