@@ -1,0 +1,64 @@
+// Thin typed wrapper over the FastAPI backend. Types mirror api.py's payloads.
+
+export type Role = 'user' | 'agent' | 'system'
+
+export interface Message {
+  role: Role
+  /** "customer", "verification", "order_agent", "policy_agent", "refund_agent" */
+  author: string
+  content: string
+}
+
+export interface Approval {
+  type: 'refund_approval'
+  order_id: string
+  item: string
+  amount: number
+  customer_id: number
+  customer_name: string | null
+  reason: string
+  customer_request: string
+}
+
+export interface ThreadView {
+  thread_id: string
+  verified: boolean
+  customer_id: number | null
+  customer_name: string | null
+  messages: Message[]
+  awaiting_approval: Approval | null
+  new_messages?: Message[]
+}
+
+export interface QueueItem extends Approval {
+  thread_id: string
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(`${response.status} ${detail}`)
+  }
+  return response.json() as Promise<T>
+}
+
+export const api = {
+  health: () => request<{ ok: boolean; mode: string }>('/health'),
+  createThread: () => request<{ thread_id: string }>('/threads', { method: 'POST' }),
+  getThread: (id: string) => request<ThreadView>(`/threads/${id}`),
+  send: (id: string, text: string) =>
+    request<ThreadView>(`/threads/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+  escalations: () => request<QueueItem[]>('/escalations'),
+  decide: (id: string, approved: boolean, note: string) =>
+    request<ThreadView>(`/escalations/${id}/decide`, {
+      method: 'POST',
+      body: JSON.stringify({ approved, note }),
+    }),
+}
