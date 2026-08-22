@@ -1,0 +1,46 @@
+# Optional local services for Postgres and Redis.
+#
+#   docker compose up -d        start both
+#   docker compose ps           check they are healthy
+#   docker compose down         stop them (data survives)
+#   docker compose down -v      stop and DELETE the data
+#
+# The app does not need this file. With DATABASE_URL and REDIS_URL unset it runs
+# on a SQLite file and an in-process cache. Compose exists so that trying the
+# Postgres/Redis paths is one command instead of an install.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orderagent-postgres
+    environment:
+      POSTGRES_USER: orderagent
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: support
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Without this, the app can start before Postgres accepts connections and
+      # fail on the first query for no obvious reason.
+      test: ["CMD-SHELL", "pg_isready -U orderagent -d support"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    # Vanilla Redis on purpose. The cache in cache.py needs no Redis Stack
+    # modules - see docs/phase10-notes.md for why langchain-redis was not used.
+    image: redis:7-alpine
+    container_name: orderagent-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
