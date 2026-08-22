@@ -68,13 +68,16 @@ allows), then **refund** (act on it), then the supervisor closes the turn.
   policy answers, reviewer risk briefs, and real tool calling via `bind_tools`.
   Every call has a deterministic fallback, so the whole system runs with no API
   key at all.
-- **Database:** SQLite, fully parameterized queries
-- **API:** FastAPI over the compiled graph, `SqliteSaver` so a pending approval
-  outlives a restart
+- **Database:** SQLite by default, PostgreSQL when `DATABASE_URL` is set -
+  same parameterized queries, same invariants, verified against both
+- **Cache:** Redis for LLM responses when `REDIS_URL` is set, in-process
+  otherwise. Cuts free-tier usage; nothing database-backed is ever cached
+- **API:** FastAPI over the compiled graph, with a durable checkpointer
+  (Postgres or SQLite) so a pending approval outlives a restart
 - **Frontend:** React + TypeScript (Vite), agent activity feed + escalation queue
-- **Tests:** pytest, 84 tests. The LLM paths are covered by a stub chat
-  model, so tool calling, provider selection and every fallback run in CI
-  without an API key.
+- **Tests:** pytest, 96 tests. LLM paths use a stub chat model; Postgres and
+  Redis tests skip unless those services are configured, so a bare clone
+  still runs the whole suite green.
 
 ## Running it
 
@@ -108,6 +111,20 @@ Tests:
 ```bash
 python -m pytest tests/ -q
 ```
+
+Optional Postgres + Redis (the CLI demo needs neither):
+
+```bash
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=support postgres:16
+docker run -d -p 6379:6379 redis:7-alpine
+
+pip install -r requirements-infra.txt
+export DATABASE_URL=postgresql://postgres:pw@localhost:5432/support
+export REDIS_URL=redis://localhost:6379
+python main.py      # -> data: postgres   cache: redis
+```
+
+Vanilla Redis is enough; Redis Stack is not required.
 
 Web console (optional - the CLI demo needs none of this):
 
@@ -149,6 +166,7 @@ pyproject.toml - pytest config (pythonpath, testpaths)
 api.py       - FastAPI over the graph (threads, messages, escalation queue)
 frontend/    - React + TS console (Vite)
 llm.py       - provider selection + every model call, each with a fallback
+cache.py     - LLM response cache (Redis or in-process)
 docs/        - phase 2 audit, phase 4 design, phase 6/7/8 notes
 db.py        - SQLite schema, seed data, parameterized queries
 state.py     - AgentState TypedDict (messages, routing, identity)
@@ -174,6 +192,7 @@ tests/       - security invariant tests (test_security.py)
       answers, reviewer risk briefs
 - [x] Phase 9 - provider-agnostic model layer (Gemini / Groq / Claude /
       OpenAI-compatible), runs free-tier or key-free
+- [x] Phase 10 - PostgreSQL and Redis, both optional
 - [ ] Phase 5 - async execution (Celery + Redis), once a genuinely slow tool
       call exists to justify it
 

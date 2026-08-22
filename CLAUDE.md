@@ -23,7 +23,7 @@ customer messages to one of two (soon three) specialists:
   tool call exists — don't add async complexity before it's needed)
 - Frontend: React (not Streamlit — I already know React/TS well)
 
-## Status: Phase 9 complete
+## Status: Phase 10 complete
 Real SQLite DB + identity verification gate + 14 security tests.
 Runs in TEST_MODE (keyword routing) with no API key, LIVE_MODE with one.
 
@@ -88,6 +88,34 @@ never TEST_MODE, or they lie in that state.
 
 Model IDs (gemini-3.5-flash, llama-3.1-8b-instant) are taken from what the
 installed SDKs reference. They WILL go stale - set LLM_MODEL, don't edit llm.py.
+
+PHASE 10 (done): DATABASE_URL -> Postgres for data AND checkpointer.
+REDIS_URL -> Redis LLM response cache. Both optional; unset = SQLite +
+in-process cache. requirements-infra.txt.
+
+Dual-mode rules:
+- Queries stay written with ? and go through db._sql(). Do NOT hand-write
+  per-dialect SQL at call sites.
+- PRAGMA is sqlite-only; column checks use information_schema on Postgres.
+- sqlite3.Row has no .values(); read scalars via an aliased column name.
+- describe_backend() must never echo DATABASE_URL - it holds the password and
+  is surfaced on /api/health.
+
+Cache rules:
+- ONLY model responses are cached. Never anything database-backed: a cached
+  answer could outlive the customer_id scoping that produced it.
+- The cache stores the MESSAGE and rebuilds the ChatGeneration wrapper on read.
+  That keeps allowed_objects="messages" and preserves tool_calls. A cache that
+  dropped tool_calls would break the tool loop only on the SECOND sighting of a
+  prompt. Do not "simplify" this.
+- langchain-redis needs Redis Stack (JSON.GET). Vanilla Redis is the target.
+- Unreachable Redis degrades to in-process. Unreachable Postgres must FAIL
+  LOUDLY - silently serving a different database than configured is worse.
+
+TESTING TRAP (fixed, do not regress): tests/conftest.py pins db.BACKEND to
+sqlite as well as DB_PATH. Without the BACKEND pin, exporting DATABASE_URL made
+pytest mutate the REAL Postgres database and fail 9 tests. Postgres tests opt
+out via their own fixture and reset refund state around themselves.
 
 TWO RULES for anything added to llm.py:
 1. EVERY function needs a deterministic fallback, taken on no-key, on
