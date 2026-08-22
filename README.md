@@ -4,6 +4,12 @@ A multi-agent customer support system for e-commerce order queries, built
 with LangGraph. A supervisor agent routes verified customers to specialist
 agents backed by a real database.
 
+![The console: a two-specialist turn paused for human approval](docs/img/console-dark.png)
+
+*One customer message reached the policy specialist, then paused at the refund
+step because Rs 12,999 is over the auto-approval limit. The graph is holding
+mid-turn; approving resumes it exactly where it stopped.*
+
 ## The problem
 
 Support systems sit between two conflicting pressures: customers ask in
@@ -112,19 +118,42 @@ Tests:
 python -m pytest tests/ -q
 ```
 
-Optional Postgres + Redis (the CLI demo needs neither):
+### Optional: Postgres and Redis
+
+**You do not need this to run the project.** With `DATABASE_URL` and `REDIS_URL`
+unset it uses a SQLite file and an in-process cache, and every demo works. Do
+this only to exercise the Postgres and Redis paths.
+
+Requires Docker Desktop running. Then, from the repo root:
 
 ```bash
-docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=support postgres:16
-docker run -d -p 6379:6379 redis:7-alpine
-
-pip install -r requirements-infra.txt
-export DATABASE_URL=postgresql://postgres:pw@localhost:5432/support
-export REDIS_URL=redis://localhost:6379
-python main.py      # -> data: postgres   cache: redis
+docker compose up -d          # starts postgres + redis
+docker compose ps             # both should read "healthy"
 ```
 
-Vanilla Redis is enough; Redis Stack is not required.
+```bash
+pip install -r requirements-infra.txt
+export DATABASE_URL=postgresql://orderagent:localdev@localhost:5432/support
+export REDIS_URL=redis://localhost:6379
+python main.py                # -> data: postgres   cache: redis
+```
+
+The console's header shows which backends are live, so you can confirm it
+without a terminal.
+
+| Command | Effect |
+|---|---|
+| `docker compose up -d` | Start both services in the background |
+| `docker compose ps` | Health status |
+| `docker compose logs -f postgres` | Follow logs |
+| `docker compose down` | Stop them; **data survives** |
+| `docker compose down -v` | Stop and **delete** the data |
+
+Credentials live in `docker-compose.yml` and are local-development only. Vanilla
+Redis is enough - Redis Stack is not required, see `docs/phase10-notes.md`.
+
+To go back to SQLite, unset the two variables (`Remove-Item Env:\DATABASE_URL`
+in PowerShell). Nothing needs uninstalling.
 
 Web console (optional - the CLI demo needs none of this):
 
@@ -162,6 +191,8 @@ specialist still sees the original question, not the verification reply.
 ## Project structure
 
 ```
+docker-compose.yml - optional postgres + redis for local development
+.env.example   - every environment variable, all optional
 pyproject.toml - pytest config (pythonpath, testpaths)
 api.py       - FastAPI over the graph (threads, messages, escalation queue)
 frontend/    - React + TS console (Vite)
