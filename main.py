@@ -10,6 +10,7 @@ the state dict.
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
+import cache
 import db
 import llm
 from graph import graph
@@ -67,6 +68,7 @@ if __name__ == "__main__":
     # can point db.DB_PATH at a temp file before any table exists.
     db.init_db()
     print(f"Running in {'LIVE MODE' if llm.live() else 'TEST MODE'} - {llm.describe()}")
+    print(f"  data: {db.describe_backend()}   cache: {cache.stats()['backend']}")
 
     conversation("demo-1", "1. Unverified user is blocked, then verifies, then gets data", [
         "Where is my order ORD1002?",

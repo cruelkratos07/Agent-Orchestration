@@ -1,5 +1,13 @@
 """
-DATABASE LAYER — real SQLite, replacing the Phase 1 fake dict.
+DATABASE LAYER — SQLite by default, PostgreSQL when DATABASE_URL is set.
+
+DUAL-MODE, and deliberately so. Postgres is what a deployment wants; SQLite is
+what `git clone && pip install && python main.py` wants. Set DATABASE_URL and
+every query here runs against Postgres instead, with no other change.
+
+The only real difference between the two is the placeholder style - sqlite3
+takes ? and psycopg takes %s - so queries are written with ? and translated in
+one place (`_sql`). Everything else in the schema is portable between them.
 
 Two tables:
   customers — who is allowed to ask about what
@@ -15,9 +23,15 @@ values get passed in here, so treating all of it as untrusted input
 is not optional.
 """
 
+import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Set this and the whole data layer moves to Postgres. Unset, it is SQLite.
+DATABASE_URL = os.environ.get("DATABASE_URL") or None
+BACKEND = "postgres" if DATABASE_URL else "sqlite"
 
 DB_PATH = Path(__file__).parent / "support.db"
 
@@ -28,10 +42,49 @@ DB_PATH = Path(__file__).parent / "support.db"
 REFUNDABLE_STATUSES = ("Delivered",)
 
 
+def _sql(text: str) -> str:
+    """
+    Translate ? placeholders to %s for psycopg.
+
+    Naive on purpose: no query in this file contains a literal '?', so a plain
+    replace is correct and obvious. If one ever does, this is the thing to fix -
+    do NOT start hand-writing per-dialect SQL at the call sites.
+    """
+    return text.replace("?", "%s") if BACKEND == "postgres" else text
+
+
 def get_connection():
+    if BACKEND == "postgres":
+        import psycopg
+        from psycopg.rows import dict_row
+
+        # dict_row makes psycopg rows behave like sqlite3.Row: dict(row) works
+        # either way, so nothing downstream has to know which backend it got.
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row  # rows behave like dicts, not tuples
     return conn
+
+
+def describe_backend() -> str:
+    """One line for logs and /api/health."""
+    if BACKEND == "sqlite":
+        return f"sqlite:{DB_PATH.name}"
+    # Never echo the URL - it carries the password.
+    return "postgres"
+
+
+def _existing_order_columns(cur) -> set:
+    """PRAGMA is SQLite-only, so ask information_schema on Postgres."""
+    if BACKEND == "postgres":
+        cur.execute(
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_name = 'orders'"
+        )
+    else:
+        cur.execute("PRAGMA table_info(orders)")
+    return {row["name"] for row in cur.fetchall()}
 
 
 def init_db():
@@ -67,15 +120,18 @@ def init_db():
     # Older support.db files predate the refund columns. Adding them here keeps
     # init_db() safe to run against an existing database instead of failing
     # with an opaque "no such column" later.
-    existing = {row["name"] for row in cur.execute("PRAGMA table_info(orders)")}
+    existing = _existing_order_columns(cur)
     for column in ("refund_status", "refunded_at"):
         if column not in existing:
             cur.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT")
 
     # Seed only if empty, so re-running doesn't duplicate rows
-    if cur.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 0:
+    cur.execute("SELECT COUNT(*) AS n FROM customers")
+    # Both sqlite3.Row and psycopg's dict_row support string indexing, so an
+    # aliased column is the portable way to read a scalar.
+    if cur.fetchone()["n"] == 0:
         cur.executemany(
-            "INSERT INTO customers (customer_id, name, email, phone) VALUES (?, ?, ?, ?)",
+            _sql("INSERT INTO customers (customer_id, name, email, phone) VALUES (?, ?, ?, ?)"),
             [
                 (1, "Ananya Sharma", "ananya.s@example.com", "+919876543210"),
                 (2, "Rohit Verma",   "rohit.v@example.com",  "+919812345678"),
@@ -83,9 +139,9 @@ def init_db():
             ],
         )
         cur.executemany(
-            """INSERT INTO orders
+            _sql("""INSERT INTO orders
                (order_id, customer_id, item, amount, status, carrier, eta, ordered_on)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""),
             [
                 ("ORD1001", 1, "Wireless ANC Earbuds Pro",   4999.00,  "Shipped",    "Delhivery", "2 days",              "2026-07-18"),
                 ("ORD1002", 1, "Mechanical Gaming Keyboard", 7499.00,  "Processing", None,        "4 days",              "2026-07-22"),
@@ -114,17 +170,15 @@ def find_customer(identifier: str):
 
     # Try numeric customer ID
     if ident.isdigit():
-        row = cur.execute(
-            "SELECT * FROM customers WHERE customer_id = ?", (int(ident),)
-        ).fetchone()
+        cur.execute(_sql("SELECT * FROM customers WHERE customer_id = ?"), (int(ident),))
+        row = cur.fetchone()
         if row:
             conn.close()
             return dict(row)
 
     # Try email (case-insensitive)
-    row = cur.execute(
-        "SELECT * FROM customers WHERE LOWER(email) = LOWER(?)", (ident,)
-    ).fetchone()
+    cur.execute(_sql("SELECT * FROM customers WHERE LOWER(email) = LOWER(?)"), (ident,))
+    row = cur.fetchone()
     if row:
         conn.close()
         return dict(row)
@@ -132,7 +186,8 @@ def find_customer(identifier: str):
     # Try phone, normalized to digits only so +91-98765 43210 == +919876543210
     digits = "".join(c for c in ident if c.isdigit())
     if digits:
-        rows = cur.execute("SELECT * FROM customers").fetchall()
+        cur.execute("SELECT * FROM customers")
+        rows = cur.fetchall()
         for r in rows:
             if "".join(c for c in r["phone"] if c.isdigit()) == digits:
                 conn.close()
@@ -151,10 +206,12 @@ def get_order(order_id: str, customer_id: int):
     this returns None rather than another customer's data.
     """
     conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM orders WHERE UPPER(order_id) = UPPER(?) AND customer_id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        _sql("SELECT * FROM orders WHERE UPPER(order_id) = UPPER(?) AND customer_id = ?"),
         (order_id.strip(), customer_id),
-    ).fetchone()
+    )
+    row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -162,10 +219,12 @@ def get_order(order_id: str, customer_id: int):
 def list_orders(customer_id: int):
     """All orders for one customer, newest first."""
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM orders WHERE customer_id = ? ORDER BY ordered_on DESC",
+    cur = conn.cursor()
+    cur.execute(
+        _sql("SELECT * FROM orders WHERE customer_id = ? ORDER BY ordered_on DESC"),
         (customer_id,),
-    ).fetchall()
+    )
+    rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -187,14 +246,15 @@ def refund_order(order_id: str, customer_id: int) -> int:
     """
     conn = get_connection()
     placeholders = ", ".join("?" for _ in REFUNDABLE_STATUSES)
-    cur = conn.execute(
-        f"""UPDATE orders
+    cur = conn.cursor()
+    cur.execute(
+        _sql(f"""UPDATE orders
                SET refund_status = 'Refunded',
                    refunded_at   = ?
              WHERE UPPER(order_id) = UPPER(?)
                AND customer_id = ?
                AND status IN ({placeholders})
-               AND (refund_status IS NULL OR refund_status != 'Refunded')""",
+               AND (refund_status IS NULL OR refund_status != 'Refunded')"""),
         (
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
             order_id.strip(),

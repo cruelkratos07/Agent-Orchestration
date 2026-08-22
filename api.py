@@ -23,10 +23,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+import cache
 import db
 import llm
 from agents import TEST_MODE
-from graph import build_sqlite_graph, list_thread_ids, pending_approval
+from graph import build_durable_graph, list_thread_ids, pending_approval
 
 CHECKPOINT_PATH = os.environ.get("CHECKPOINT_PATH", "checkpoints.sqlite")
 
@@ -45,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-graph, checkpointer = build_sqlite_graph(CHECKPOINT_PATH)
+graph, checkpointer = build_durable_graph(CHECKPOINT_PATH)
 db.init_db()
 
 
@@ -94,6 +95,8 @@ def health():
         "ok": True,
         "mode": "LIVE_MODE" if llm.live() else "TEST_MODE",
         "model": llm.describe(),
+        "database": db.describe_backend(),
+        "cache": cache.stats(),
     }
 
 

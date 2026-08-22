@@ -20,6 +20,7 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
+import db
 from state import AgentState
 from agents import supervisor_node, order_lookup_node, policy_node, refund_node
 from verify import verify_node
@@ -81,6 +82,31 @@ def build_graph(checkpointer=None):
     # hard requirement for Phase 6: interrupt() pauses the graph by writing a
     # checkpoint, and there is nothing to resume from without one.
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
+
+
+def build_durable_graph(sqlite_path):
+    """
+    A graph whose pauses outlive the process, on whichever store is configured.
+
+    Postgres when DATABASE_URL is set - which is what a deployment wants, and
+    what lets several API processes share one escalation queue. SQLite
+    otherwise, so a clone still runs with nothing installed.
+
+    Returns (compiled_graph, checkpointer). The checkpointer comes back because
+    the escalation queue enumerates threads, and only it knows which exist.
+    """
+    if db.DATABASE_URL:
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg import Connection
+
+        connection = Connection.connect(
+            db.DATABASE_URL, autocommit=True, prepare_threshold=0
+        )
+        checkpointer = PostgresSaver(connection)
+        checkpointer.setup()          # creates its tables; safe to re-run
+        return build_graph(checkpointer), checkpointer
+
+    return build_sqlite_graph(sqlite_path)
 
 
 def build_sqlite_graph(path):

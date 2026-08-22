@@ -1,0 +1,23 @@
+# Phase 10: Postgres and Redis. Both optional - the project runs on SQLite with
+# an in-process cache when neither is configured.
+#
+#   DATABASE_URL      -> business data AND the LangGraph checkpointer move to
+#                        Postgres. Unset = SQLite files.
+#   REDIS_URL         -> LLM response cache moves to Redis. Unset = in-process.
+#   CACHE_TTL_SECONDS -> cache entry lifetime (default 3600).
+#
+# Local services, if you want them:
+#   docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=support postgres:16
+#   docker run -d -p 6379:6379 redis:7-alpine
+#
+# Then:
+#   $env:DATABASE_URL = "postgresql://postgres:pw@localhost:5432/support"
+#   $env:REDIS_URL    = "redis://localhost:6379"
+#
+# Vanilla Redis is enough - no Redis Stack / RedisJSON needed. See
+# docs/phase10-notes.md for why langchain-redis was not used.
+-r requirements-api.txt
+
+psycopg[binary]==3.3.4
+langgraph-checkpoint-postgres==3.1.2
+redis==8.1.0

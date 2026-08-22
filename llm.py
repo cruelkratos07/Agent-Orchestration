@@ -34,6 +34,7 @@ from datetime import date, datetime, timezone
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+import cache
 import db
 from tools import check_order_status, list_my_orders
 
@@ -122,6 +123,10 @@ def model_name_for(provider: str, env=None) -> str:
     return env.get("LLM_MODEL") or PROVIDERS[provider]["default_model"]
 
 
+# Registering the cache is global to LangChain, so it happens once, here, next
+# to the only code that calls a model.
+CACHE_BACKEND = cache.install()
+
 PROVIDER = resolve_provider()
 TEST_MODE = PROVIDER is None
 MODEL_NAME = model_name_for(PROVIDER) if PROVIDER else None
@@ -205,7 +210,7 @@ def describe() -> str:
         return "no model (deterministic mode)"
     if not live():
         return f"{PROVIDER}:{MODEL_NAME} UNAVAILABLE - running deterministically"
-    return f"{PROVIDER}:{MODEL_NAME}"
+    return f"{PROVIDER}:{MODEL_NAME} (cache: {CACHE_BACKEND})"
 
 
 def use_model(model):
