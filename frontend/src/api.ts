@@ -37,6 +37,25 @@ export interface QueueItem extends Approval {
   thread_id: string
 }
 
+export interface ThreadSummary {
+  thread_id: string
+  customer_name: string | null
+  verified: boolean
+  message_count: number
+  awaiting_approval: boolean
+  last_message: string | null
+}
+
+export interface Health {
+  ok: boolean
+  mode: string
+  /** e.g. "gemini:gemini-3.5-flash (cache: redis)" or "no model (deterministic mode)" */
+  model: string
+  /** "sqlite:support.db" or "postgres" */
+  database: string
+  cache: { backend: string; hits?: number; misses?: number; hit_rate?: number | null }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -50,7 +69,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; mode: string; model: string }>('/health'),
+  health: () => request<Health>('/health'),
   createThread: () => request<{ thread_id: string }>('/threads', { method: 'POST' }),
   getThread: (id: string) => request<ThreadView>(`/threads/${id}`),
   send: (id: string, text: string) =>
@@ -58,6 +77,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
+  threads: () => request<ThreadSummary[]>('/threads'),
   escalations: () => request<QueueItem[]>('/escalations'),
   decide: (id: string, approved: boolean, note: string) =>
     request<ThreadView>(`/escalations/${id}/decide`, {

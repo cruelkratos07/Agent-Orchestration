@@ -1,62 +1,68 @@
 import { useCallback, useEffect, useState } from 'react'
 import Conversation from './Conversation'
 import Queue from './Queue'
-import { api, type QueueItem, type ThreadView } from './api'
+import StatusBar from './StatusBar'
+import ThreadList from './ThreadList'
+import { api, type Health, type QueueItem, type ThreadSummary, type ThreadView } from './api'
 
 /**
- * The console is deliberately two panes, not a router: a reviewer wants the
- * queue and the conversation it refers to on screen at the same time.
+ * Three panes, not a router: a reviewer wants the queue, the conversation it
+ * refers to, and the list of everything else on screen together.
  *
- * The queue is polled rather than pushed. A refund pauses inside a graph run,
+ * The queue is polled rather than pushed. A refund pauses INSIDE a graph run,
  * so there is nothing to subscribe to without adding a broker - and Phase 5
- * (Celery/Redis) is still deliberately deferred. Polling is the honest
- * solution at this scale.
+ * (Celery/Redis) stays deliberately deferred until a genuinely slow tool call
+ * exists. Polling is the honest solution at this scale.
  */
 const POLL_MS = 2000
 
+const blankThread = (thread_id: string): ThreadView => ({
+  thread_id,
+  verified: false,
+  customer_id: null,
+  customer_name: null,
+  messages: [],
+  awaiting_approval: null,
+})
+
 export default function App() {
-  const [mode, setMode] = useState<string>('')
-  const [model, setModel] = useState<string>('')
+  const [health, setHealth] = useState<Health | null>(null)
   const [thread, setThread] = useState<ThreadView | null>(null)
+  const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [busy, setBusy] = useState(false)
+  const [deciding, setDeciding] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const refreshQueue = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      setQueue(await api.escalations())
+      const [nextQueue, nextThreads, nextHealth] = await Promise.all([
+        api.escalations(),
+        api.threads(),
+        api.health(),
+      ])
+      setQueue(nextQueue)
+      setThreads(nextThreads)
+      setHealth(nextHealth)
     } catch (caught) {
       setError(String(caught))
     }
   }, [])
 
-  // One thread on first load, so the composer is usable immediately.
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const health = await api.health()
-        setMode(health.mode)
-        setModel(health.model)
-        const { thread_id } = await api.createThread()
-        setThread({
-          thread_id,
-          verified: false,
-          customer_id: null,
-          customer_name: null,
-          messages: [],
-          awaiting_approval: null,
-        })
-      } catch (caught) {
-        setError(String(caught))
-      }
-    })()
+  const startThread = useCallback(async () => {
+    const { thread_id } = await api.createThread()
+    setThread(blankThread(thread_id))
   }, [])
 
   useEffect(() => {
-    refreshQueue()
-    const timer = setInterval(refreshQueue, POLL_MS)
+    startThread().catch((caught) => setError(String(caught)))
+  }, [startThread])
+
+  useEffect(() => {
+    refresh()
+    const timer = setInterval(refresh, POLL_MS)
     return () => clearInterval(timer)
-  }, [refreshQueue])
+  }, [refresh])
 
   async function send(text: string) {
     if (!thread) return
@@ -69,7 +75,7 @@ export default function App() {
     })
     try {
       setThread(await api.send(thread.thread_id, text))
-      await refreshQueue()
+      await refresh()
     } catch (caught) {
       setError(String(caught))
     } finally {
@@ -78,17 +84,22 @@ export default function App() {
   }
 
   async function decide(threadId: string, approved: boolean, note: string) {
+    setDeciding(threadId)
     setError(null)
     try {
       const updated = await api.decide(threadId, approved, note)
-      // Only replace the open conversation if the decision was about it.
       if (threadId === thread?.thread_id) setThread(updated)
     } catch (caught) {
-      // A 409 means someone else got there first. Re-reading the queue is the
-      // correct response, not an alarming error.
-      setError(String(caught))
+      // A 409 means another reviewer got there first. Re-reading the queue is
+      // the correct response, so say so plainly rather than shouting.
+      setError(
+        String(caught).includes('409')
+          ? 'That decision was already made by someone else. Queue refreshed.'
+          : String(caught),
+      )
     } finally {
-      await refreshQueue()
+      setDeciding(null)
+      await refresh()
     }
   }
 
@@ -103,40 +114,32 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>Order Support Console</h1>
-        <div className="topbar__meta">
-          {mode && (
-            <span className="pill" title={model}>
-              {mode.replace('_', ' ')}
-              {model && model !== 'no model (deterministic mode)' && ` · ${model}`}
-            </span>
-          )}
-          <button
-            className="link"
-            onClick={async () => {
-              const { thread_id } = await api.createThread()
-              setThread({
-                thread_id,
-                verified: false,
-                customer_id: null,
-                customer_name: null,
-                messages: [],
-                awaiting_approval: null,
-              })
-            }}
-          >
-            New conversation
-          </button>
+        <div className="brand">
+          <span className="mark" aria-hidden />
+          <h1>Order Support Console</h1>
         </div>
+        <StatusBar health={health} />
       </header>
 
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error" role="status">
+          {error}
+          <button className="ghost" onClick={() => setError(null)}>Dismiss</button>
+        </p>
+      )}
 
-      <main className="split">
+      <main className="layout">
+        <ThreadList
+          threads={threads}
+          activeThread={thread?.thread_id ?? null}
+          onOpen={open}
+          onNew={() => startThread().catch((caught) => setError(String(caught)))}
+        />
         <Conversation thread={thread} busy={busy} onSend={send} />
         <Queue
           items={queue}
           activeThread={thread?.thread_id ?? null}
+          busy={deciding}
           onDecide={decide}
           onOpen={open}
         />
