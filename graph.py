@@ -1,5 +1,4 @@
-"""
-GRAPH — Phase 2 wiring.
+"""Support workflow topology and checkpoint configuration.
 
     START -> verify -> (verified?) -> supervisor -> order_lookup --+
                           |                     |-> policy -------+
@@ -10,9 +9,7 @@ GRAPH — Phase 2 wiring.
                           |                     +-- FINISH --> END
                           +-- not verified --> END (asks for identity)
 
-The verify node sits in front of EVERYTHING. There is no edge from
-START that skips it, which is what makes the guarantee structural:
-an order tool cannot be reached without passing verification first.
+The verification node is the only edge out of START.
 """
 
 import sqlite3
@@ -69,17 +66,14 @@ def build_graph(checkpointer=None):
             END: END,
         },
     )
-    # Phase 4: specialists hand control BACK to the supervisor instead of
-    # ending the turn, so one user message can require several specialists.
-    # supervisor_node is what decides the turn is over - see its docstring for
-    # the three rules that guarantee this loop terminates.
+    # Returning to the supervisor allows several specialists in one turn.
     builder.add_edge("order_lookup", "supervisor")
     builder.add_edge("policy", "supervisor")
     builder.add_edge("refund", "supervisor")
 
     # A checkpointer persists state per thread_id, so a caller passes only the
     # new message instead of re-threading the whole state dict. It is also a
-    # hard requirement for Phase 6: interrupt() pauses the graph by writing a
+    # hard requirement for review: interrupt() pauses the graph by writing a
     # checkpoint, and there is nothing to resume from without one.
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
 
@@ -146,8 +140,7 @@ def pending_approval(compiled_graph, config):
     """
     The approval a thread is waiting on, or None.
 
-    Phase 7's escalation queue is this called across threads. Kept here rather
-    than in the frontend so the payload shape has one owner.
+    The API calls this across registered threads to build the review queue.
     """
     snapshot = compiled_graph.get_state(config)
     for task in snapshot.tasks:

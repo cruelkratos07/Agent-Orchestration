@@ -1,5 +1,5 @@
 """
-API tests for the Phase 7 backend.
+API tests for conversations and the reviewer queue.
 
 Skipped entirely when the API extras are absent, so
 `pip install -r requirements.txt && pytest tests/ -q` stays green with only the
@@ -18,6 +18,7 @@ import db                                    # noqa: E402
 def client(tmp_path, monkeypatch):
     """A fresh app with its own checkpoint file and its own seeded database."""
     monkeypatch.setenv("CHECKPOINT_PATH", str(tmp_path / "cp.sqlite"))
+    monkeypatch.setenv("DEMO_MODE", "true")
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "api_support.db")
 
     import api
@@ -148,7 +149,7 @@ def test_denying_from_the_queue_writes_nothing(client):
 
 def test_deciding_twice_is_a_conflict_not_a_second_refund(client):
     """
-    Two reviewers opening the same queue item is the obvious race. Resuming a
+    Two reviewers can open the same queue item. Resuming a
     thread that is not waiting would drive it onward from wherever it sits, so
     the second decision must be refused rather than applied.
     """
@@ -184,7 +185,7 @@ def test_thread_list_flags_the_ones_needing_attention(client):
 
 def test_pause_survives_a_server_restart(client, tmp_path, monkeypatch):
     """
-    The reason this uses SqliteSaver rather than InMemorySaver. A reviewer may
+    A reviewer may
     not get to the queue before the process is redeployed.
     """
     thread = new_thread(client)

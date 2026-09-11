@@ -4,9 +4,9 @@ Shared fixtures.
 `temp_db` gives every test a freshly seeded database in a temp directory. Two
 separate reasons it has to exist:
 
-  1. Since Phase 4 the refund tool WRITES, so tests can no longer share one
-     database without leaking state between them.
-  2. Since Phase 10 the data layer is dual-mode. If DATABASE_URL happens to be
+  1. Refund tests write data, so tests cannot share one database without
+     leaking state between them.
+  2. The data layer is dual-mode. If DATABASE_URL happens to be
      exported - which it will be, on any machine that runs the Postgres setup -
      an autouse fixture that only redirected DB_PATH would silently point the
      whole suite at the real Postgres and refund real rows. It did exactly that

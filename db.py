@@ -1,26 +1,7 @@
-"""
-DATABASE LAYER — SQLite by default, PostgreSQL when DATABASE_URL is set.
+"""SQLite/PostgreSQL access for customers and orders.
 
-DUAL-MODE, and deliberately so. Postgres is what a deployment wants; SQLite is
-what `git clone && pip install && python main.py` wants. Set DATABASE_URL and
-every query here runs against Postgres instead, with no other change.
-
-The only real difference between the two is the placeholder style - sqlite3
-takes ? and psycopg takes %s - so queries are written with ? and translated in
-one place (`_sql`). Everything else in the schema is portable between them.
-
-Two tables:
-  customers — who is allowed to ask about what
-  orders    — belongs to exactly one customer via customer_id
-
-The customer_id foreign key is the whole point. It's what makes it
-POSSIBLE to leak one customer's orders to another, and therefore what
-the verification step (verify.py) exists to protect.
-
-SECURITY NOTE: every query here uses parameterized placeholders (?),
-never f-strings or string concatenation. An LLM will be choosing what
-values get passed in here, so treating all of it as untrusted input
-is not optional.
+Queries use ``?`` placeholders and `_sql` translates them for psycopg. Every
+order operation is parameterized and scoped by customer ID.
 """
 
 import json
@@ -46,9 +27,7 @@ def _sql(text: str) -> str:
     """
     Translate ? placeholders to %s for psycopg.
 
-    Naive on purpose: no query in this file contains a literal '?', so a plain
-    replace is correct and obvious. If one ever does, this is the thing to fix -
-    do NOT start hand-writing per-dialect SQL at the call sites.
+    No query in this module contains a literal question mark.
     """
     return text.replace("?", "%s") if BACKEND == "postgres" else text
 

@@ -1,30 +1,8 @@
-"""
-THE MODEL LAYER — every place Claude is actually used, and its fallback.
+"""Model-provider adapters and deterministic fallbacks.
 
-Phase 8 exists because the project had exactly one LLM call in it: a routing
-classifier that a dict of keywords already handled. The architecture was the
-interesting part, but "where does the model earn its place?" had a thin answer.
-
-Four jobs now, each one something code genuinely cannot do well:
-
-  route()                  - intent routing (was already here)
-  resolve_order_reference()- "where's my camera?" -> a specific order ID
-  policy_answer()          - the policy rule applied to THIS order's dates
-  risk_summary()           - a one-line brief for the human reviewing a refund
-  answer_order_question()  - real tool calling, via bind_tools
-
-TWO RULES THAT APPLY TO ALL OF THEM
------------------------------------
-1. EVERY function has a deterministic fallback and is never worse than it.
-   If there is no API key, if the call raises, or if the model returns
-   something invalid, the deterministic branch runs. The no-key demo has to
-   keep working at every phase, and a flaky API must degrade rather than fail.
-
-2. THE MODEL SUGGESTS, THE CODE VERIFIES.
-   Anything the model returns that could reach the database is validated
-   against a customer-scoped set first. The model cannot widen its own access
-   by returning a value nobody offered it - see resolve_order_reference and
-   answer_order_question.
+Model output is normalized or validated before it reaches application state or
+the database. Provider errors and invalid responses fall back to deterministic
+behavior.
 """
 
 import os
@@ -41,12 +19,6 @@ from tools import check_order_status, list_my_orders
 # --------------------------------------------------------------------------
 # Provider selection
 # --------------------------------------------------------------------------
-#
-# The project is provider-agnostic on purpose. Everything that makes it
-# interesting - the verify gate, customer-scoped tools, InjectedToolArg, the
-# approval interrupt - is langchain-core and LangGraph, not vendor-specific. So
-# the model is a swappable part, and saying so is more honest than pretending
-# one vendor is load-bearing.
 #
 # Pick one with LLM_PROVIDER, or set any provider's key and let it auto-detect.
 # LLM_MODEL overrides the model name for whichever provider is chosen.
@@ -302,7 +274,7 @@ RECENCY_WORDS = ("last", "latest", "recent", "newest", "most recent")
 
 
 def _fallback_order_reference(text: str, orders: list):
-    """Regex, then a recency heuristic. What the project did before Phase 8."""
+    """Resolve an explicit order ID, then fall back to a recency heuristic."""
     match = re.search(r"ORD\d+", (text or "").upper())
     if match:
         return match.group(0)
@@ -445,15 +417,8 @@ def run_order_tools(text: str, customer_id: int):
     """
     Let the model drive the order tools.
 
-    THE SECURITY POINT, and the reason InjectedToolArg was added in Phase 4:
-
-      customer_id is injected here, at execution time, from verified state. It
-      is absent from the schema the model sees, so the model cannot supply it -
-      and if a tool call arrives carrying one anyway (prompt injection, a
-      confused model, a future schema change) it is DISCARDED and overwritten.
-
-      The model chooses which tool to call and what order to ask about. It does
-      not get a vote on whose account is read.
+    ``customer_id`` is injected from verified state and is absent from the tool
+    schema presented to the model. Any value included by a model is discarded.
 
     Returns (answer, trace) where trace lists the tool calls made, so the UI
     and the tests can see what the model actually did.
@@ -488,7 +453,7 @@ def run_order_tools(text: str, customer_id: int):
                 ToolMessage(content=str(observation), tool_call_id=call.get("id", ""))
             )
 
-    # Ran out of turns. Say so rather than returning a half-answer.
+    # Do not return a partial observation after exhausting the tool budget.
     return (
         "I wasn't able to finish looking that up. Could you name the order ID?",
         trace,

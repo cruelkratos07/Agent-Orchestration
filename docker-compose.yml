@@ -23,15 +23,14 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       # Without this, the app can start before Postgres accepts connections and
-      # fail on the first query for no obvious reason.
+      # fail on the first query while the service is still starting.
       test: ["CMD-SHELL", "pg_isready -U orderagent -d support"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
-    # Vanilla Redis on purpose. The cache in cache.py needs no Redis Stack
-    # modules - see docs/phase10-notes.md for why langchain-redis was not used.
+    # The cache uses standard Redis commands; Redis Stack is not required.
     image: redis:7-alpine
     container_name: orderagent-redis
     ports:

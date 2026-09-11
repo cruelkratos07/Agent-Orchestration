@@ -5,14 +5,15 @@ interface Props {
   activeThread: string | null
   onOpen: (threadId: string) => void
   onNew: () => void
+  canCreate?: boolean
 }
 
-export default function ThreadList({ threads, activeThread, onOpen, onNew }: Props) {
+export default function ThreadList({ threads, activeThread, onOpen, onNew, canCreate = true }: Props) {
   return (
     <aside className="rail">
       <div className="rail__head">
         <h2>Conversations</h2>
-        <button className="ghost" onClick={onNew}>New</button>
+        {canCreate && <button className="ghost" onClick={onNew}>New</button>}
       </div>
 
       {!threads.length && <p className="hint">No conversations yet.</p>}

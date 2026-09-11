@@ -35,7 +35,17 @@ export interface ThreadView {
 
 export interface QueueItem extends Approval {
   thread_id: string
+  approval_id: string
+  status: string
 }
+
+export interface Session { subject: string; role: 'demo' | 'customer' | 'reviewer'; customer_id: number | null }
+export interface AuditEvent {
+  approval_id: string; reviewer_id: string; approved: boolean; note: string
+  status: string; created_at: string; action: Approval
+}
+let accessToken = ''
+export function setAccessToken(token: string) { accessToken = token }
 
 export interface ThreadSummary {
   thread_id: string
@@ -48,6 +58,7 @@ export interface ThreadSummary {
 
 export interface Health {
   ok: boolean
+  auth_mode: string
   mode: string
   /** e.g. "gemini:gemini-3.5-flash (cache: redis)" or "no model (deterministic mode)" */
   model: string
@@ -58,8 +69,9 @@ export interface Health {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { 'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...init?.headers },
   })
   if (!response.ok) {
     const detail = await response.text()
@@ -69,6 +81,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  authConfig: () => request<{ demo: boolean }>('/auth/config'),
+  me: () => request<Session>('/auth/me'),
+  audit: (id: string) => request<AuditEvent[]>(`/threads/${id}/audit`),
   health: () => request<Health>('/health'),
   createThread: () => request<{ thread_id: string }>('/threads', { method: 'POST' }),
   getThread: (id: string) => request<ThreadView>(`/threads/${id}`),
@@ -79,9 +94,9 @@ export const api = {
     }),
   threads: () => request<ThreadSummary[]>('/threads'),
   escalations: () => request<QueueItem[]>('/escalations'),
-  decide: (id: string, approved: boolean, note: string) =>
+  decide: (id: string, approved: boolean, note: string, approval_id: string) =>
     request<ThreadView>(`/escalations/${id}/decide`, {
       method: 'POST',
-      body: JSON.stringify({ approved, note }),
+      body: JSON.stringify({ approved, note, approval_id }),
     }),
 }

@@ -107,7 +107,7 @@ def test_identity_and_question_in_one_message_still_answers(convo):
     state = convo("I'm customer 1, where is my order ORD1002?")
     assert state["verified"] is True
     assert state["customer_id"] == 1
-    # state["next"] is FINISH by the end of the turn: since Phase 4 the
+    # state["next"] is FINISH by the end of the turn: specialists
     # supervisor runs again after the specialist and closes the turn out.
     replies = [m.content for m in state["messages"] if getattr(m, "name", None) == "order_agent"]
     assert any("ORD1002" in r for r in replies)
@@ -116,7 +116,7 @@ def test_identity_and_question_in_one_message_still_answers(convo):
 def test_customer_id_is_not_model_fillable():
     """
     Invariant 1 must hold structurally, not by convention. customer_id must
-    not appear in the schema an LLM sees, or Phase 4's bind_tools() would
+    not appear in the schema an LLM sees, or bind_tools() would
     let the model pick any customer it likes.
     """
     assert "customer_id" not in check_order_status.args
@@ -140,11 +140,11 @@ def test_supervisor_route_normalization():
 
 def test_two_specialists_in_one_turn(thread):
     """
-    The acceptance test for Phase 4, now spanning a Phase 6 pause. One user
+    One user
     message, two specialists: policy explains the damaged-item rule, then
-    refund acts on it - and since Phase 6 the refund waits for a human first,
+    refund acts on it after human review,
     so the single turn straddles an interrupt and a resume. Neither is possible
-    in the Phase 2 topology, where every specialist edged straight to END.
+    if every specialist edged straight to END.
     """
     send(thread, "rohit.v@example.com")
     paused = send(thread, "my action camera ORD1003 arrived damaged, I want a refund")

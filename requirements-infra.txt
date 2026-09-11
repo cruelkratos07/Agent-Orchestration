@@ -1,4 +1,4 @@
-# Phase 10: Postgres and Redis. Both optional - the project runs on SQLite with
+# PostgreSQL and Redis are optional; the project runs on SQLite with
 # an in-process cache when neither is configured.
 #
 #   DATABASE_URL      -> business data AND the LangGraph checkpointer move to
@@ -14,8 +14,7 @@
 #   $env:DATABASE_URL = "postgresql://postgres:pw@localhost:5432/support"
 #   $env:REDIS_URL    = "redis://localhost:6379"
 #
-# Vanilla Redis is enough - no Redis Stack / RedisJSON needed. See
-# docs/phase10-notes.md for why langchain-redis was not used.
+# The cache uses standard Redis string commands; Redis Stack is not required.
 -r requirements-api.txt
 
 psycopg[binary]==3.3.4

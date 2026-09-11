@@ -1,33 +1,8 @@
-"""
-LLM RESPONSE CACHE — Redis when REDIS_URL is set, in-process otherwise.
+"""LangChain response cache backed by Redis or process memory.
 
-WHY A CACHE EARNS ITS PLACE HERE
---------------------------------
-Not for latency. Because free-tier rate limits are the real constraint since
-Phase 9, and this system re-asks the model the same questions constantly:
-
-  * the supervisor runs once per HOP, so a two-specialist turn is three routing
-    calls - and the second and third see the same user text;
-  * risk_summary sits above interrupt(), so Phase 6's ordering rule makes it
-    re-run on every resume;
-  * demos and tests replay identical conversations.
-
-All model calls here use temperature=0, so identical input means identical
-output and caching is sound rather than a correctness risk.
-
-WHAT IS NOT CACHED
-------------------
-Nothing that reads the database. Caching order or refund state would be both a
-staleness bug and a security surface - a cached answer could outlive the
-customer_id scoping that produced it. Only model responses are cached, keyed by
-the full prompt plus model configuration.
-
-WHY NOT langchain-redis
------------------------
-Its RedisCache requires Redis Stack: it issues JSON.GET and fails on a vanilla
-server with `unknown command 'JSON.GET'`. Most free managed Redis tiers, the
-redis:7-alpine image and a plain apt install are all vanilla. Forty lines of
-BaseCache runs everywhere instead.
+Only model responses are cached. Database reads and mutations are excluded to
+avoid stale customer or order data. The Redis implementation uses core string
+commands so it works with a standard Redis server.
 """
 
 import hashlib
@@ -53,9 +28,7 @@ class RedisResponseCache(BaseCache):
     only chat message classes are ever rehydrated from Redis, so a shared or
     compromised cache cannot be used to instantiate arbitrary classes.
 
-    Tool calls survive the round trip. That matters more than it looks: a cache
-    that dropped tool_calls would silently break the tool-calling loop the
-    second time any prompt was seen, and only then.
+    Tool calls are preserved so cached generations can continue the tool loop.
     """
 
     def __init__(self, url, ttl=CACHE_TTL_SECONDS, prefix=KEY_PREFIX):
@@ -110,9 +83,7 @@ def install():
     """
     Register the cache with LangChain. Returns a description for logs.
 
-    Falls back to an in-process cache if REDIS_URL is unset OR unreachable. A
-    cache is an optimisation; being unable to reach it must never take the
-    system down.
+    Falls back to an in-process cache when Redis is unset or unavailable.
     """
     global _cache
     if REDIS_URL:

@@ -37,7 +37,7 @@ export default function Queue({ items, activeThread, busy, onDecide, onOpen }: P
 
       <ul className="queue">
         {items.map((item) => {
-          const pending = busy === item.thread_id
+          const pending = busy === item.thread_id || item.status !== 'pending'
           return (
             <li
               key={item.thread_id}
@@ -51,10 +51,11 @@ export default function Queue({ items, activeThread, busy, onDecide, onOpen }: P
               <p className="hint">{item.customer_name} · #{item.customer_id}</p>
 
               <p className="card__why">{item.reason}</p>
+              {item.status !== 'pending' && <p role="status" className="banner">{item.status.replace(/_/g, ' ')} · contact an operator before retrying</p>}
               {/* Identical to `reason` when no model is configured, so showing
                   both would just be noise. */}
               {item.risk_summary && item.risk_summary !== item.reason && (
-                <p className="card__brief">{item.risk_summary}</p>
+                <p className="card__brief"><strong>AI advisory: </strong>{item.risk_summary}</p>
               )}
 
               <blockquote>{item.customer_request}</blockquote>

@@ -1,24 +1,8 @@
-"""
-VERIFICATION GATE — runs before the supervisor, every single turn.
-
-THE PATTERN (adapted from ANI-IN/Multi-Agent-Customer-Support, rebuilt
-here for order support):
-
-  1. If already verified, pass straight through. Never re-verify.
-  2. If not verified, try to pull an identifier out of what the user
-     said and look it up in the database.
-  3. Found -> write customer_id into state ONCE, mark verified.
-  4. Not found -> ask for an identifier and stop the turn. No
-     specialist runs. The graph does not proceed.
-
-Step 4 is the interesting one. A naive design would let the agent
-answer anyway and just "be careful." Here the graph structurally
-cannot reach an order tool without a verified ID, because the routing
-edge checks `verified` before it checks anything else.
-"""
+"""Identity gate that runs before the supervisor."""
 
 import re
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
 from state import AgentState, last_user_text
 import db
 
@@ -30,12 +14,10 @@ VERIFY_PROMPT = (
 
 def extract_identifier(text: str):
     """Pull a plausible identifier out of free text. Returns str or None."""
-    # Email
     email = re.search(r"[\w\.\-\+]+@[\w\-]+\.[\w\.\-]+", text)
     if email:
         return email.group(0)
 
-    # Phone: 10+ digits, allowing spaces/dashes/plus between them
     phone = re.search(r"\+?[\d][\d\s\-]{8,}\d", text)
     if phone:
         return phone.group(0)
@@ -52,14 +34,16 @@ def extract_identifier(text: str):
     return None
 
 
-def verify_node(state: AgentState) -> dict:
+def verify_node(state: AgentState, config: RunnableConfig) -> dict:
     """Gate every turn on a verified identity."""
-    # Already verified — nothing to do.
     if state.get("verified"):
         return {}
 
     user_text = last_user_text(state)
-    identifier = extract_identifier(user_text)
+    # API-authenticated identity is supplied by trusted server configuration,
+    # never by the message or model. CLI demos retain identifier resolution.
+    trusted_id = config.get("configurable", {}).get("authenticated_customer_id")
+    identifier = str(trusted_id) if trusted_id is not None else extract_identifier(user_text)
 
     if not identifier:
         return {

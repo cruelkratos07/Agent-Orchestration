@@ -1,8 +1,4 @@
-# Phase 7 extras: the HTTP API in front of the graph.
-#
-# Kept separate so `pip install -r requirements.txt && python main.py` still
-# runs the CLI demo with nothing else installed. tests/test_api.py skips itself
-# when these are absent, so the core suite stays green either way.
+# HTTP API and durable SQLite checkpoints. The CLI only needs requirements.txt.
 -r requirements.txt
 
 fastapi==0.141.1

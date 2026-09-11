@@ -1,22 +1,9 @@
-"""
-NODES — supervisor + specialists.
-
-PHASE 8: the model does the language work; this file still does the security
-work. Every LLM call lives in llm.py, and every one of them has a
-deterministic fallback, so the whole graph still runs with no API key.
-
-PHASE 2 CHANGE: order_lookup_node reads customer_id from STATE, never
-from the user's message. The user can type "show me customer 7's order"
-all they want; the tool still gets the verified ID that verify_node
-wrote after a real database lookup.
-
-TEST_MODE: with no ANTHROPIC_API_KEY set, routing uses keyword matching
-so the whole graph stays runnable and demoable without live API calls.
-"""
+"""Supervisor and specialist nodes for the support workflow."""
 
 import re
 
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 import db
@@ -31,9 +18,7 @@ from tools import (
     process_refund,
 )
 
-# Backstop on how many specialists one turn may consult. The eligibility rules
-# in supervisor_node already bound a turn, so hitting this means routing
-# misfired - and a bounded wrong answer beats GraphRecursionError in a demo.
+# A hard cap protects the loop if a model returns repetitive routes.
 MAX_SPECIALIST_HOPS = 3
 
 VALID_ROUTES = llm.VALID_ROUTES
@@ -43,9 +28,7 @@ def supervisor_node(state: AgentState) -> dict:
     """
     Decide which specialist handles the next hop of this turn.
 
-    Phase 4: specialists now return here instead of ending the turn, so this
-    runs once per hop and must be able to decide the turn is complete. Three
-    independent things guarantee it terminates:
+    Specialists return here after each hop. Three conditions terminate a turn:
 
       1. A refund is terminal - nothing follows it in the same turn.
       2. A specialist that already answered this turn is not eligible again.
@@ -55,7 +38,7 @@ def supervisor_node(state: AgentState) -> dict:
     user_text = last_user_text(state)
     used = specialists_used(state)
 
-    # A refund ends the turn. Nothing sensible follows issuing money back.
+    # A refund is terminal for the current turn.
     if "refund" in used:
         return {"next": "FINISH"}
 
@@ -76,10 +59,8 @@ def order_lookup_node(state: AgentState) -> dict:
     """
     Order specialist. Identity comes from state, NOT from user text.
 
-    With a model available the model drives the tools (llm.run_order_tools),
-    which is what makes the InjectedToolArg guarantee load-bearing rather than
-    theoretical: the model picks the tool and the order, and customer_id is
-    injected at execution time from verified state.
+    With a model available, ``llm.run_order_tools`` lets it choose the tool and
+    order while injecting ``customer_id`` from verified state.
 
     With no model, the previous deterministic behaviour: an explicit order ID
     if the message contains one, otherwise list everything.
@@ -138,7 +119,7 @@ def normalize_decision(decision) -> tuple:
     approved: the safe default for something that moves money.
     """
     if isinstance(decision, dict):
-        return bool(decision.get("approved")), str(decision.get("note", ""))
+        return decision.get("approved") is True, str(decision.get("note", ""))
     if isinstance(decision, bool):
         return decision, ""
     if isinstance(decision, str):
@@ -146,30 +127,23 @@ def normalize_decision(decision) -> tuple:
     return False, ""
 
 
-def refund_node(state: AgentState) -> dict:
+def refund_node(state: AgentState, config: RunnableConfig) -> dict:
     """
-    Refund specialist, with human-in-the-loop approval (Phase 6).
+    Refund specialist with human review for escalated requests.
 
     Identity comes from verified state, exactly as it does for order_lookup.
     The extra safety on a write is the approval gate, not a stronger identity
     check.
 
-    ORDERING RULE - the thing that makes this correct:
-
-      Everything before interrupt() runs a SECOND time when the graph resumes,
-      because the node restarts rather than continuing from where it paused.
-      Verified by spike: a counter placed above interrupt() incremented twice
-      for one approval.
-
-      So everything above the interrupt is a pure read, and the write is
-      strictly below it. Put db.refund_order() above the interrupt and one
-      approval issues two refunds - which the idempotent UPDATE would absorb,
-      hiding the bug rather than surfacing it.
+    LangGraph restarts this node when an interrupt resumes. Everything above
+    ``interrupt`` must therefore be side-effect free; the database mutation
+    stays below it.
     """
     customer_id = state["customer_id"]          # verified, trusted
     text = last_user_text(state)
 
-    order_id = llm.resolve_order_reference(text, customer_id)
+    reviewed = config.get("configurable", {}).get("reviewed_action")
+    order_id = reviewed["order_id"] if reviewed else llm.resolve_order_reference(text, customer_id)
     if not order_id:
         return _refund_reply(
             "Which order would you like refunded? Please share the order ID."
@@ -177,6 +151,10 @@ def refund_node(state: AgentState) -> dict:
 
     # --- reads only, above the interrupt: safe to run twice ---
     order = db.get_order(order_id, customer_id)
+    if reviewed and (order is None or any(
+        reviewed.get(key) != order.get(key) for key in ("order_id", "customer_id", "amount")
+    )):
+        raise ValueError("Reviewed order changed; operator reconciliation required")
     if order is None or order["refund_status"] == "Refunded" or \
             order["status"] not in db.REFUNDABLE_STATUSES:
         # Nothing to decide. Let the tool produce the explanation.
@@ -187,7 +165,7 @@ def refund_node(state: AgentState) -> dict:
         )
 
     reason = escalation_reason(order, text)
-    if not reason:
+    if not reason and not reviewed:
         return _refund_reply(
             process_refund.invoke(
                 {"order_id": order_id, "customer_id": customer_id, "reason": text}
@@ -195,10 +173,7 @@ def refund_node(state: AgentState) -> dict:
         )
 
     # --- pause the graph and wait for a person ---
-    # risk_summary is a model call sitting above the interrupt, so it runs a
-    # second time on resume. It is side-effect free, which is what the ordering
-    # rule requires; the cost is one wasted call per approval. Accepted rather
-    # than threading a cache through state for a one-line brief.
+    # risk_summary can run again on resume and must remain side-effect free.
     decision = interrupt(
         {
             "type": "refund_approval",
@@ -213,6 +188,13 @@ def refund_node(state: AgentState) -> dict:
         }
     )
     approved, note = normalize_decision(decision)
+
+    # A resumed node re-resolves the order. Bind API approval to what the
+    # reviewer actually saw; changed model output must never move other money.
+    if isinstance(decision, dict) and "action" in decision:
+        action = decision["action"]
+        if any(action.get(key) != order.get(key) for key in ("order_id", "customer_id", "amount")):
+            return _refund_reply("Order details changed during review. No refund was issued; request a new review.")
 
     # --- writes only, below the interrupt ---
     if not approved:

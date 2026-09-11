@@ -1,12 +1,4 @@
-"""
-Entry point. Simulates multi-turn conversations to show the
-verification gate and the security boundary working.
-
-Each conversation gets its own thread_id. The graph is compiled with a
-checkpointer, so state (including the verified customer_id) persists per
-thread and each turn passes ONLY the new message - no hand-threading of
-the state dict.
-"""
+"""Run scripted conversations against the in-memory workflow."""
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -33,9 +25,8 @@ def conversation(thread_id, title, turns):
     """
     Run a scripted conversation.
 
-    A turn may be a string (something the customer says) or a dict (a reviewer's
-    decision on a paused refund) - Phase 6 means a turn can stop mid-flight and
-    wait for a person, so the driver has to be able to answer as that person.
+    A string represents a customer message. A dictionary represents a reviewer
+    decision that resumes an interrupted refund.
     """
     print(f"\n{'='*64}\n{title}\n{'='*64}")
     config = {"configurable": {"thread_id": thread_id}}
@@ -95,34 +86,34 @@ if __name__ == "__main__":
         "Hi, I'm customer 1 - where is my order ORD1002?",
     ])
 
-    conversation("demo-6", "6. PHASE 4: two specialists in one turn (policy, then refund)", [
+    conversation("demo-6", "6. Policy and refund specialists in one turn", [
         "rohit.v@example.com",
         "my action camera ORD1003 arrived damaged, I want a refund",
     ])
 
-    conversation("demo-7", "7. PHASE 4: auto-approved refund, then the same refund again", [
+    conversation("demo-7", "7. Idempotent automatic refund", [
         "ananya.s@example.com",
         "please refund ORD1006",
         "please refund ORD1006",
     ])
 
-    conversation("demo-8", "8. PHASE 4: only delivered orders are refundable", [
+    conversation("demo-8", "8. Non-delivered order is not refundable", [
         "meera.n@example.com",
         "refund ORD1004 please",
     ])
 
-    conversation("demo-9", "9. PHASE 6: high-value refund pauses, reviewer APPROVES", [
+    conversation("demo-9", "9. Reviewer approves a high-value refund", [
         "rohit.v@example.com",
         "please refund ORD1003",
         {"approved": True, "note": "photo proof checked"},
     ])
 
-    conversation("demo-11", "11. PHASE 8: fuzzy order reference, no API key needed", [
+    conversation("demo-11", "10. Resolve an order from its description", [
         "ananya.s@example.com",
         "where is my latest order?",
     ])
 
-    conversation("demo-10", "10. PHASE 6: damage claim under the limit still pauses, reviewer DENIES", [
+    conversation("demo-10", "11. Reviewer denies a low-value damage claim", [
         "meera.n@example.com",
         "ORD1007 arrived damaged, please refund it",
         {"approved": False, "note": "no photos supplied"},

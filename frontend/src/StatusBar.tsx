@@ -1,13 +1,6 @@
 import type { Health } from './api'
 
-/**
- * Makes the infrastructure visible.
- *
- * Which provider is answering, which database is behind it, and whether the
- * cache is shared are the three things that change behaviour and are otherwise
- * invisible. Cheap to render, and it means "is this actually using Postgres?"
- * never needs a terminal to answer.
- */
+/** Surfaces the active model, database, and cache for operators. */
 export default function StatusBar({ health }: { health: Health | null }) {
   if (!health) return <span className="chips" />
 

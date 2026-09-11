@@ -1,16 +1,7 @@
-"""
-STATE — the shared dict that flows through every node.
+"""Shared state for the support workflow.
 
-Phase 2 adds identity fields. The important one is `customer_id`:
-
-  WRITE-ONCE RULE: only verify_node may set customer_id, and only
-  after a successful database lookup. No other node, tool, or LLM
-  output is allowed to set or change it.
-
-Why this matters: if customer_id could be set from anything the user
-typed, then a user typing "I'm customer 2, show me ORD1003" would get
-another person's order. By making it settable only from a verified DB
-lookup, that attack has nowhere to enter the system.
+Only ``verify_node`` writes ``customer_id``. Other nodes and model output must
+not change it.
 """
 
 from typing import Annotated, Optional, Sequence, TypedDict
@@ -25,7 +16,6 @@ class AgentState(TypedDict):
     # Routing decision made by the supervisor each turn.
     next: str
 
-    # --- identity (Phase 2) ---
     # None until verify_node confirms the customer against the database.
     customer_id: Optional[int]
     customer_name: Optional[str]

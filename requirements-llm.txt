@@ -1,4 +1,4 @@
-# Phase 9: model providers. Install ONE of these - whichever key you have.
+# Optional model providers. Install the one you plan to use.
 #
 # The project runs with none of them (deterministic keyword mode), so this file
 # is entirely optional. Pick a provider with LLM_PROVIDER, or just set a key and

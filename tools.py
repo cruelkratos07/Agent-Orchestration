@@ -1,27 +1,11 @@
-"""
-TOOLS — now backed by the real database instead of a dict.
-
-KEY DESIGN CHANGE FROM PHASE 1:
-Every order tool takes customer_id as a required argument, and that
-value is scoped into the SQL query itself. A tool physically cannot
-return data belonging to a different customer, no matter what the
-LLM asks it for.
-
-`customer_id` is marked InjectedToolArg, which removes it from the schema
-the LLM sees. The model cannot choose a customer_id even once these tools
-are bound to it (Phase 4) - the value can only be supplied by the caller,
-from verified state. Without this, the "security lives in the signature"
-claim would be false the moment llm.bind_tools() is introduced: the
-signature would be what EXPOSES the parameter to the model.
-"""
+"""Customer-scoped order tools and public policy lookup."""
 
 from typing import Annotated
 
 from langchain_core.tools import InjectedToolArg, tool
 import db
 
-# Refunds at or above this value need a human to approve them. Phase 6 turns
-# this into a graph interrupt; the condition is unchanged from Phase 4.
+# Refunds at or above this value need reviewer approval.
 REFUND_APPROVAL_THRESHOLD = 5000.0
 
 # Words that make a refund a judgement call regardless of value. A damage claim
@@ -150,14 +134,14 @@ def process_refund(
         )
 
     # Belt and braces. refund_node decides escalation and obtains approval
-    # before calling this, but the tool refuses a high-value write on its own
+    # before calling this, but the tool refuses any escalated write on its own
     # authority anyway. `approved` is an InjectedToolArg, so an LLM cannot set
     # it - the same reasoning that protects customer_id.
-    if order["amount"] >= REFUND_APPROVAL_THRESHOLD and not approved:
+    if escalation_reason(order, reason) and approved is not True:
         return (
             f"Refund of Rs {order['amount']:.0f} for {order['order_id']} is "
-            f"above the Rs {REFUND_APPROVAL_THRESHOLD:.0f} auto-approval "
-            "limit, so it needs a human to approve it. Nothing has been "
+            f"outside automatic approval policy ({escalation_reason(order, reason)}), "
+            "so it needs a human to approve it. Nothing has been "
             "charged back yet and the order is unchanged."
         )
 

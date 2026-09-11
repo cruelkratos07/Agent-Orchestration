@@ -42,9 +42,11 @@ interface Props {
   thread: ThreadView | null
   busy: boolean
   onSend: (text: string) => void
+  readOnly?: boolean
+  demo?: boolean
 }
 
-export default function Conversation({ thread, busy, onSend }: Props) {
+export default function Conversation({ thread, busy, onSend, readOnly, demo }: Props) {
   const [draft, setDraft] = useState('')
   const feed = useRef<HTMLUListElement>(null)
 
@@ -57,7 +59,7 @@ export default function Conversation({ thread, busy, onSend }: Props) {
   function submit(event: React.FormEvent) {
     event.preventDefault()
     const text = draft.trim()
-    if (!text || busy) return
+    if (!text || busy || readOnly || thread?.awaiting_approval || !thread) return
     onSend(text)
     setDraft('')
   }
@@ -78,15 +80,13 @@ export default function Conversation({ thread, busy, onSend }: Props) {
       </header>
 
       <ul className="feed" ref={feed}>
-        {empty && (
+        {empty && !readOnly && (
           <li className="starter">
             <p>
-              Identify yourself first — a customer ID, email, or phone. The
-              verification gate sits in front of every specialist, so nothing
-              about an order is reachable until it passes.
+              {demo ? 'Choose a sample customer, then try an order lookup or a refund review.' : 'Your account is verified through your access token. Ask about your orders or request a refund.'}
             </p>
             <div className="starter__row">
-              {STARTERS.map((starter) => (
+              {STARTERS.filter(starter => demo || starter.label !== 'Verify as Rohit').map((starter) => (
                 <button key={starter.text} onClick={() => onSend(starter.text)}>
                   {starter.label}
                 </button>
@@ -117,9 +117,11 @@ export default function Conversation({ thread, busy, onSend }: Props) {
           value={draft}
           placeholder={busy ? 'Working…' : 'Message the support agent'}
           onChange={(event) => setDraft(event.target.value)}
-          disabled={busy}
+          aria-label="Message the support agent"
+          maxLength={8000}
+          disabled={busy || readOnly || !!thread?.awaiting_approval || !thread}
         />
-        <button type="submit" disabled={busy || !draft.trim()}>Send</button>
+        <button type="submit" disabled={busy || readOnly || !!thread?.awaiting_approval || !thread || !draft.trim()}>Send</button>
       </form>
     </section>
   )
