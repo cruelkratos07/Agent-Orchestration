@@ -1,29 +1,24 @@
-"""
-API tests for the Phase 7 backend.
+"""HTTP contracts and durable refund approval tests."""
 
-Skipped entirely when the API extras are absent, so
-`pip install -r requirements.txt && pytest tests/ -q` stays green with only the
-core dependencies installed.
-"""
 import pytest
 
-pytest.importorskip("fastapi", reason="API extras not installed (requirements-api.txt)")
+pytest.importorskip("fastapi", reason="Install the api extra to run HTTP tests")
 
-from fastapi.testclient import TestClient   # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
-import db                                    # noqa: E402
+from agent_orchestration import db  # noqa: E402
+from agent_orchestration.api import create_app  # noqa: E402
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """A fresh app with its own checkpoint file and its own seeded database."""
+def app(tmp_path, monkeypatch):
     monkeypatch.setenv("CHECKPOINT_PATH", str(tmp_path / "cp.sqlite"))
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "api_support.db")
+    return create_app()
 
-    import api
-    import importlib
-    importlib.reload(api)                    # rebind the graph to this temp state
-    with TestClient(api.app) as test_client:
+
+@pytest.fixture
+def client(app):
+    with TestClient(app) as test_client:
         yield test_client
 
 
@@ -38,6 +33,7 @@ def say(client, thread_id, text):
 
 
 # --- basics ---
+
 
 def test_health_reports_mode(client):
     body = client.get("/api/health").json()
@@ -75,6 +71,7 @@ def test_authors_are_exposed_for_the_activity_feed(client):
 
 
 # --- the escalation queue ---
+
 
 def test_queue_is_empty_until_something_escalates(client):
     thread = new_thread(client)
@@ -121,13 +118,16 @@ def test_approving_from_the_queue_issues_the_refund(client):
     say(client, thread, "please refund ORD1003")
 
     response = client.post(
-        f"/api/escalations/{thread}/decide", json={"approved": True, "note": "photos ok"}
+        f"/api/escalations/{thread}/decide",
+        json={"approved": True, "note": "photos ok"},
     )
     assert response.status_code == 200
     view = response.json()
 
     assert view["awaiting_approval"] is None
-    assert any("Refund of Rs 12999 issued" in m["content"] for m in view["new_messages"])
+    assert any(
+        "Refund of Rs 12999 issued" in m["content"] for m in view["new_messages"]
+    )
     assert client.get("/api/escalations").json() == []
     assert db.get_order("ORD1003", 2)["refund_status"] == "Refunded"
 
@@ -138,7 +138,8 @@ def test_denying_from_the_queue_writes_nothing(client):
     say(client, thread, "please refund ORD1003")
 
     view = client.post(
-        f"/api/escalations/{thread}/decide", json={"approved": False, "note": "no proof"}
+        f"/api/escalations/{thread}/decide",
+        json={"approved": False, "note": "no proof"},
     ).json()
 
     assert any("not approved" in m["content"] for m in view["new_messages"])
@@ -156,7 +157,12 @@ def test_deciding_twice_is_a_conflict_not_a_second_refund(client):
     say(client, thread, "rohit.v@example.com")
     say(client, thread, "please refund ORD1003")
 
-    assert client.post(f"/api/escalations/{thread}/decide", json={"approved": True}).status_code == 200
+    assert (
+        client.post(
+            f"/api/escalations/{thread}/decide", json={"approved": True}
+        ).status_code
+        == 200
+    )
     again = client.post(f"/api/escalations/{thread}/decide", json={"approved": True})
     assert again.status_code == 409
 
@@ -164,7 +170,12 @@ def test_deciding_twice_is_a_conflict_not_a_second_refund(client):
 def test_deciding_on_a_thread_that_never_paused_is_a_conflict(client):
     thread = new_thread(client)
     say(client, thread, "ananya.s@example.com")
-    assert client.post(f"/api/escalations/{thread}/decide", json={"approved": True}).status_code == 409
+    assert (
+        client.post(
+            f"/api/escalations/{thread}/decide", json={"approved": True}
+        ).status_code
+        == 409
+    )
 
 
 def test_thread_list_flags_the_ones_needing_attention(client):
@@ -182,18 +193,12 @@ def test_thread_list_flags_the_ones_needing_attention(client):
     assert rows[waiting]["customer_name"] == "Rohit Verma"
 
 
-def test_pause_survives_a_server_restart(client, tmp_path, monkeypatch):
-    """
-    The reason this uses SqliteSaver rather than InMemorySaver. A reviewer may
-    not get to the queue before the process is redeployed.
-    """
-    thread = new_thread(client)
-    say(client, thread, "rohit.v@example.com")
-    say(client, thread, "please refund ORD1003")
+def test_pause_survives_a_server_restart(app):
+    with TestClient(app) as client:
+        thread = new_thread(client)
+        say(client, thread, "rohit.v@example.com")
+        say(client, thread, "please refund ORD1003")
 
-    import api
-    import importlib
-    importlib.reload(api)                     # same CHECKPOINT_PATH, new process-ish
-    with TestClient(api.app) as restarted:
+    with TestClient(create_app()) as restarted:
         queue = restarted.get("/api/escalations").json()
         assert [q["order_id"] for q in queue] == ["ORD1003"]

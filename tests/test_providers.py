@@ -5,9 +5,10 @@ Pure env -> provider resolution, so these run with no SDK installed and no key.
 The point of the phase is that the model is a swappable part: nothing about the
 security model, the graph, or the tool contracts is vendor-specific.
 """
+
 import pytest
 
-import llm
+from agent_orchestration import llm
 
 
 def test_no_keys_means_deterministic_mode():
@@ -32,13 +33,17 @@ def test_auto_detect_follows_a_documented_order():
 
 
 def test_explicit_provider_beats_auto_detect():
-    assert llm.resolve_provider({"LLM_PROVIDER": "groq", "GEMINI_API_KEY": "y"}) == "groq"
+    assert (
+        llm.resolve_provider({"LLM_PROVIDER": "groq", "GEMINI_API_KEY": "y"}) == "groq"
+    )
 
 
 def test_provider_can_be_forced_off_even_with_a_key_present():
     """Needed to demo the deterministic path on a machine that has keys set."""
     for value in ("none", "off", "test", "NONE"):
-        assert llm.resolve_provider({"LLM_PROVIDER": value, "GEMINI_API_KEY": "y"}) is None
+        assert (
+            llm.resolve_provider({"LLM_PROVIDER": value, "GEMINI_API_KEY": "y"}) is None
+        )
 
 
 def test_unknown_provider_fails_loudly_and_lists_the_options():
@@ -65,7 +70,7 @@ def test_model_name_defaults_per_provider_and_is_overridable():
 
 
 def test_describe_is_readable_in_both_modes():
-    assert "deterministic" in llm.describe()      # no keys in the test env
+    assert "deterministic" in llm.describe()  # no keys in the test env
 
 
 def test_configured_but_unusable_does_not_claim_live_mode(monkeypatch):
@@ -80,8 +85,10 @@ def test_configured_but_unusable_does_not_claim_live_mode(monkeypatch):
     monkeypatch.setattr(llm, "TEST_MODE", False)
     monkeypatch.setattr(llm, "MODEL_NAME", "gemini-x")
     monkeypatch.setattr(llm, "_model", None)
-    monkeypatch.setattr(llm, "_warned", True)     # silence the one-time warning
-    monkeypatch.setattr(llm, "_build_model", lambda p: (_ for _ in ()).throw(ImportError()))
+    monkeypatch.setattr(llm, "_warned", True)  # silence the one-time warning
+    monkeypatch.setattr(
+        llm, "_build_model", lambda p: (_ for _ in ()).throw(ImportError())
+    )
 
     # TEST_MODE says "configured"; live() says "usable". They differ here, and
     # that gap is exactly what the banner used to get wrong.
@@ -98,11 +105,13 @@ def test_missing_sdk_degrades_instead_of_crashing(monkeypatch, capsys):
     monkeypatch.setattr(llm, "PROVIDER", "gemini")
     monkeypatch.setattr(llm, "_model", None)
     monkeypatch.setattr(llm, "_warned", False)
-    monkeypatch.setattr(llm, "_build_model", lambda provider: (_ for _ in ()).throw(ImportError()))
+    monkeypatch.setattr(
+        llm, "_build_model", lambda provider: (_ for _ in ()).throw(ImportError())
+    )
 
     assert llm.active_model() is None
     warning = capsys.readouterr().err
     assert "langchain-google-genai" in warning and "pip install" in warning
 
-    assert llm.active_model() is None             # still None, and not warned twice
+    assert llm.active_model() is None  # still None, and not warned twice
     assert capsys.readouterr().err == ""

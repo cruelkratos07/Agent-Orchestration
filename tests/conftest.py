@@ -16,9 +16,10 @@ So the fixture pins the backend to SQLite as well as redirecting the path.
 Postgres is covered deliberately by tests/test_infra.py, against a database
 the developer chose to point at.
 """
+
 import pytest
 
-import db
+from agent_orchestration import db
 
 
 @pytest.fixture(autouse=True)

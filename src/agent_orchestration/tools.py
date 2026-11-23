@@ -1,24 +1,10 @@
-"""
-TOOLS — now backed by the real database instead of a dict.
-
-KEY DESIGN CHANGE FROM PHASE 1:
-Every order tool takes customer_id as a required argument, and that
-value is scoped into the SQL query itself. A tool physically cannot
-return data belonging to a different customer, no matter what the
-LLM asks it for.
-
-`customer_id` is marked InjectedToolArg, which removes it from the schema
-the LLM sees. The model cannot choose a customer_id even once these tools
-are bound to it (Phase 4) - the value can only be supplied by the caller,
-from verified state. Without this, the "security lives in the signature"
-claim would be false the moment llm.bind_tools() is introduced: the
-signature would be what EXPOSES the parameter to the model.
-"""
+"""Order and policy tools scoped by the verified customer."""
 
 from typing import Annotated
 
 from langchain_core.tools import InjectedToolArg, tool
-import db
+
+from agent_orchestration import db
 
 # Refunds at or above this value need a human to approve them. Phase 6 turns
 # this into a graph interrupt; the condition is unchanged from Phase 4.

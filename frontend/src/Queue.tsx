@@ -29,9 +29,7 @@ export default function Queue({ items, activeThread, busy, onDecide, onOpen }: P
 
       {!items.length && (
         <p className="hint hint--pad">
-          Nothing waiting. Refunds of {rupees(5000)} or more, and any damage
-          claim, pause here for a human — the graph stops mid-turn and resumes
-          exactly where it left off once you decide.
+          No refunds awaiting review.
         </p>
       )}
 
@@ -60,7 +58,8 @@ export default function Queue({ items, activeThread, busy, onDecide, onOpen }: P
               <blockquote>{item.customer_request}</blockquote>
 
               <input
-                placeholder="Note for the audit trail (optional)"
+                placeholder="Reviewer note (optional)"
+                aria-label={`Review note for ${item.order_id}`}
                 value={notes[item.thread_id] ?? ''}
                 disabled={pending}
                 onChange={(event) =>
@@ -70,14 +69,14 @@ export default function Queue({ items, activeThread, busy, onDecide, onOpen }: P
               <div className="card__actions">
                 <button
                   className="approve"
-                  disabled={pending}
+                  disabled={busy !== null}
                   onClick={() => onDecide(item.thread_id, true, notes[item.thread_id] ?? '')}
                 >
                   {pending ? '…' : 'Approve'}
                 </button>
                 <button
                   className="deny"
-                  disabled={pending}
+                  disabled={busy !== null}
                   onClick={() => onDecide(item.thread_id, false, notes[item.thread_id] ?? '')}
                 >
                   Deny

@@ -41,10 +41,11 @@ function Bubble({ message }: { message: Message }) {
 interface Props {
   thread: ThreadView | null
   busy: boolean
-  onSend: (text: string) => void
+  disabled: boolean
+  onSend: (text: string) => Promise<boolean>
 }
 
-export default function Conversation({ thread, busy, onSend }: Props) {
+export default function Conversation({ thread, busy, disabled, onSend }: Props) {
   const [draft, setDraft] = useState('')
   const feed = useRef<HTMLUListElement>(null)
 
@@ -54,12 +55,11 @@ export default function Conversation({ thread, busy, onSend }: Props) {
     feed.current?.scrollTo({ top: feed.current.scrollHeight, behavior: 'smooth' })
   }, [thread?.messages.length, busy])
 
-  function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault()
     const text = draft.trim()
-    if (!text || busy) return
-    onSend(text)
-    setDraft('')
+    if (!text || disabled) return
+    if (await onSend(text)) setDraft('')
   }
 
   const empty = !thread?.messages.length
@@ -81,13 +81,11 @@ export default function Conversation({ thread, busy, onSend }: Props) {
         {empty && (
           <li className="starter">
             <p>
-              Identify yourself first — a customer ID, email, or phone. The
-              verification gate sits in front of every specialist, so nothing
-              about an order is reachable until it passes.
+              Enter a demo customer ID, email or phone to start.
             </p>
             <div className="starter__row">
               {STARTERS.map((starter) => (
-                <button key={starter.text} onClick={() => onSend(starter.text)}>
+                <button key={starter.text} disabled={disabled} onClick={() => void onSend(starter.text)}>
                   {starter.label}
                 </button>
               ))}
@@ -107,19 +105,19 @@ export default function Conversation({ thread, busy, onSend }: Props) {
 
       {thread?.awaiting_approval && (
         <p className="banner">
-          Paused mid-turn on <strong>{thread.awaiting_approval.order_id}</strong>.
-          The graph is holding at the refund step — approve or deny it in the queue.
+          Refund <strong>{thread.awaiting_approval.order_id}</strong> is awaiting a decision in the queue.
         </p>
       )}
 
       <form className="composer" onSubmit={submit}>
         <input
           value={draft}
+          aria-label="Message the support agent"
           placeholder={busy ? 'Working…' : 'Message the support agent'}
           onChange={(event) => setDraft(event.target.value)}
-          disabled={busy}
+          disabled={disabled}
         />
-        <button type="submit" disabled={busy || !draft.trim()}>Send</button>
+        <button type="submit" disabled={disabled || !draft.trim()}>Send</button>
       </form>
     </section>
   )

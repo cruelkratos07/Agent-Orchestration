@@ -1,34 +1,4 @@
-"""
-LLM RESPONSE CACHE — Redis when REDIS_URL is set, in-process otherwise.
-
-WHY A CACHE EARNS ITS PLACE HERE
---------------------------------
-Not for latency. Because free-tier rate limits are the real constraint since
-Phase 9, and this system re-asks the model the same questions constantly:
-
-  * the supervisor runs once per HOP, so a two-specialist turn is three routing
-    calls - and the second and third see the same user text;
-  * risk_summary sits above interrupt(), so Phase 6's ordering rule makes it
-    re-run on every resume;
-  * demos and tests replay identical conversations.
-
-All model calls here use temperature=0, so identical input means identical
-output and caching is sound rather than a correctness risk.
-
-WHAT IS NOT CACHED
-------------------
-Nothing that reads the database. Caching order or refund state would be both a
-staleness bug and a security surface - a cached answer could outlive the
-customer_id scoping that produced it. Only model responses are cached, keyed by
-the full prompt plus model configuration.
-
-WHY NOT langchain-redis
------------------------
-Its RedisCache requires Redis Stack: it issues JSON.GET and fails on a vanilla
-server with `unknown command 'JSON.GET'`. Most free managed Redis tiers, the
-redis:7-alpine image and a plain apt install are all vanilla. Forty lines of
-BaseCache runs everywhere instead.
-"""
+"""LangChain message cache backed by in-process storage or standard Redis."""
 
 import hashlib
 import os
@@ -76,13 +46,13 @@ class RedisResponseCache(BaseCache):
             return None
         self.client.incr(f"{self.prefix}:stats:hits")
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")     # loads() is still marked beta
+            warnings.simplefilter("ignore")  # loads() is still marked beta
             return [ChatGeneration(message=loads(raw, allowed_objects="messages"))]
 
     def update(self, prompt, llm_string, return_val):
         message = getattr(return_val[0], "message", None) if return_val else None
         if message is None:
-            return                              # not a chat generation; skip
+            return  # not a chat generation; skip
         self.client.setex(self._key(prompt, llm_string), self.ttl, dumps(message))
 
     def clear(self, **kwargs):
@@ -118,13 +88,15 @@ def install():
     if REDIS_URL:
         try:
             candidate = RedisResponseCache(REDIS_URL)
-            candidate.client.ping()             # fail fast, not on first query
+            candidate.client.ping()  # fail fast, not on first query
             _cache = candidate
             set_llm_cache(_cache)
             return f"redis (ttl {CACHE_TTL_SECONDS}s)"
         except Exception as error:
-            print(f"[cache] Redis unreachable ({type(error).__name__}), "
-                  f"using in-process cache instead")
+            print(
+                f"[cache] Redis unreachable ({type(error).__name__}), "
+                f"using in-process cache instead"
+            )
     _cache = InMemoryCache()
     set_llm_cache(_cache)
     return "in-process"

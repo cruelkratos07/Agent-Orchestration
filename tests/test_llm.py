@@ -10,12 +10,12 @@ The most important test in this file is
 test_tool_call_carrying_another_customer_id_is_overridden. Everything else is
 behaviour; that one is the security claim.
 """
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-import db
-import llm
-from agents import order_lookup_node, policy_node, supervisor_node
+from agent_orchestration import db, llm
+from agent_orchestration.agents import order_lookup_node, policy_node, supervisor_node
 
 
 class StubModel:
@@ -47,7 +47,10 @@ class StubModel:
 
 
 def tool_call(name, args, call_id="c1"):
-    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id, "type": "tool_call"}])
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": args, "id": call_id, "type": "tool_call"}],
+    )
 
 
 @pytest.fixture
@@ -68,6 +71,7 @@ def model():
 # --------------------------------------------------------------------
 # the security claim
 # --------------------------------------------------------------------
+
 
 def test_tool_call_carrying_another_customer_id_is_overridden(model):
     """
@@ -116,6 +120,7 @@ def test_model_cannot_name_an_order_it_was_not_offered(model):
 # tool calling
 # --------------------------------------------------------------------
 
+
 def test_tool_loop_feeds_observations_back_and_returns_the_answer(model):
     stub = model(
         tool_call("list_my_orders", {}),
@@ -134,12 +139,14 @@ def test_unknown_tool_name_does_not_crash_the_turn(model):
     )
     answer, trace = llm.run_order_tools("do something odd", customer_id=1)
     assert answer
-    assert trace == []          # nothing was executed
+    assert trace == []  # nothing was executed
 
 
 def test_tool_loop_is_bounded(model):
     """A model that only ever calls tools must not loop forever."""
-    replies = [tool_call("list_my_orders", {}, f"c{i}") for i in range(llm.MAX_TOOL_TURNS + 2)]
+    replies = [
+        tool_call("list_my_orders", {}, f"c{i}") for i in range(llm.MAX_TOOL_TURNS + 2)
+    ]
     model(*replies)
     answer, trace = llm.run_order_tools("loop please", customer_id=1)
     assert "name the order ID" in answer
@@ -150,9 +157,12 @@ def test_tool_loop_is_bounded(model):
 # fuzzy order references
 # --------------------------------------------------------------------
 
+
 def test_model_resolves_a_description_to_an_order(model):
     model(AIMessage(content="ORD1001"))
-    assert llm.resolve_order_reference("where are my earbuds?", customer_id=1) == "ORD1001"
+    assert (
+        llm.resolve_order_reference("where are my earbuds?", customer_id=1) == "ORD1001"
+    )
 
 
 def test_explicit_order_id_still_works_without_a_model():
@@ -160,7 +170,7 @@ def test_explicit_order_id_still_works_without_a_model():
 
 
 def test_recency_words_resolve_without_a_model():
-    """"my last order" is answerable from the DB alone - newest first."""
+    """ "my last order" is answerable from the DB alone - newest first."""
     newest = db.list_orders(2)[0]["order_id"]
     assert llm.resolve_order_reference("refund my last order", customer_id=2) == newest
 
@@ -173,8 +183,13 @@ def test_no_model_and_no_order_id_gives_none():
 # grounded policy answers
 # --------------------------------------------------------------------
 
+
 def test_policy_answer_is_grounded_in_the_order(model):
-    stub = model(AIMessage(content="ORD1006 was delivered on 19 July, so you are inside the window."))
+    stub = model(
+        AIMessage(
+            content="ORD1006 was delivered on 19 July, so you are inside the window."
+        )
+    )
     order = db.get_order("ORD1006", 1)
     answer = llm.policy_answer("can I still return this?", "canned rule", order)
     assert "19 July" in answer
@@ -183,13 +198,16 @@ def test_policy_answer_is_grounded_in_the_order(model):
 
 
 def test_policy_answer_without_an_order_stays_canned(model):
-    model()     # no replies scripted: the model must not be called at all
-    assert llm.policy_answer("what is the policy?", "canned rule", None) == "canned rule"
+    model()  # no replies scripted: the model must not be called at all
+    assert (
+        llm.policy_answer("what is the policy?", "canned rule", None) == "canned rule"
+    )
 
 
 # --------------------------------------------------------------------
 # degradation: never worse than the deterministic path
 # --------------------------------------------------------------------
+
 
 def test_routing_falls_back_to_keywords_when_the_api_fails(model):
     model(RuntimeError("503 overloaded"))
@@ -223,12 +241,16 @@ def test_empty_model_reply_falls_back(model):
 # the nodes use it
 # --------------------------------------------------------------------
 
+
 def test_order_node_uses_the_model_when_one_exists(model):
     model(
         tool_call("check_order_status", {"order_id": "ORD1002"}),
         AIMessage(content="Your keyboard is still processing."),
     )
-    state = {"messages": [HumanMessage(content="where is my keyboard?")], "customer_id": 1}
+    state = {
+        "messages": [HumanMessage(content="where is my keyboard?")],
+        "customer_id": 1,
+    }
     out = order_lookup_node(state)
     assert out["messages"][0].content == "Your keyboard is still processing."
     assert out["messages"][0].name == "order_agent"
@@ -243,15 +265,18 @@ def test_order_node_falls_back_if_the_model_raises(model):
 
 def test_policy_node_grounds_on_the_resolved_order(model):
     model(
-        AIMessage(content="ORD1006"),                       # resolve_order_reference
+        AIMessage(content="ORD1006"),  # resolve_order_reference
         AIMessage(content="Delivered 19 July, still returnable."),
     )
-    state = {"messages": [HumanMessage(content="can I return the speaker?")], "customer_id": 1}
+    state = {
+        "messages": [HumanMessage(content="can I return the speaker?")],
+        "customer_id": 1,
+    }
     out = policy_node(state)
     assert out["messages"][0].content == "Delivered 19 July, still returnable."
 
 
 def test_supervisor_uses_the_model_and_normalizes_it(model):
-    model(AIMessage(content="'order_lookup'"))              # quoted, as models do
+    model(AIMessage(content="'order_lookup'"))  # quoted, as models do
     state = {"messages": [HumanMessage(content="where is my stuff")]}
     assert supervisor_node(state)["next"] == "order_lookup"
