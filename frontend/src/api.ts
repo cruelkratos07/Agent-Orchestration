@@ -56,29 +56,36 @@ export interface Health {
   cache: { backend: string; hits?: number; misses?: number; hit_rate?: number | null }
 }
 
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
     ...init,
   })
   if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(`${response.status} ${detail}`)
+    const error = await response.json().catch(() => null)
+    const detail = typeof error?.detail === 'string' ? error.detail : `Request failed (${response.status})`
+    throw new ApiError(response.status, detail)
   }
   return response.json() as Promise<T>
 }
 
 export const api = {
-  health: () => request<Health>('/health'),
+  health: (signal: AbortSignal) => request<Health>('/health', { signal }),
   createThread: () => request<{ thread_id: string }>('/threads', { method: 'POST' }),
-  getThread: (id: string) => request<ThreadView>(`/threads/${id}`),
+  getThread: (id: string, signal: AbortSignal) => request<ThreadView>(`/threads/${id}`, { signal }),
   send: (id: string, text: string) =>
     request<ThreadView>(`/threads/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
-  threads: () => request<ThreadSummary[]>('/threads'),
-  escalations: () => request<QueueItem[]>('/escalations'),
+  threads: (signal: AbortSignal) => request<ThreadSummary[]>('/threads', { signal }),
+  escalations: (signal: AbortSignal) => request<QueueItem[]>('/escalations', { signal }),
   decide: (id: string, approved: boolean, note: string) =>
     request<ThreadView>(`/escalations/${id}/decide`, {
       method: 'POST',

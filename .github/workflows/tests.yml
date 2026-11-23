@@ -1,45 +1,51 @@
-name: tests
+name: CI
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  LLM_PROVIDER: none
+
 jobs:
-  # The security invariants are enforced by CI, not by remembering to run
-  # pytest. The core job deliberately installs ONLY requirements.txt: the demo
-  # has to keep working with no provider SDK, no Postgres and no Redis, so that
-  # promise is tested rather than asserted.
-  core:
+  backend:
+    name: Python ${{ matrix.python }} / ${{ matrix.suite }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.13"]
+        include:
+          - python: "3.11"
+            suite: core
+          - python: "3.13"
+            suite: core
+          - python: "3.11"
+            suite: api
+            extras: --extra api
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
+          version: "0.13.9"
           python-version: ${{ matrix.python }}
-          cache: pip
-      - run: pip install -r requirements.txt
-      - run: python -m pytest tests/ -q
-      - name: demo runs with no API key
-        run: python main.py > /dev/null
+          enable-cache: true
+      - run: uv sync --locked ${{ matrix.extras }}
+      - run: uv run --no-sync pytest -q
+      - name: Run the demo with core dependencies
+        if: matrix.suite == 'core'
+        run: uv run --locked --no-dev order-support-demo
+      - name: Check formatting and build the package
+        if: matrix.suite == 'api'
+        run: |
+          uv run --no-sync ruff check src tests
+          uv run --no-sync ruff format --check src tests
+          uv build
 
-  api:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - run: pip install -r requirements-api.txt
-      - run: python -m pytest tests/ -q
-
-  # Postgres and Redis for real, not skipped. This is the job that would have
-  # caught the dual-mode placeholder bugs.
   services:
+    name: PostgreSQL and Redis
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -62,24 +68,26 @@ jobs:
       DATABASE_URL: postgresql://orderagent:localdev@localhost:5432/support
       REDIS_URL: redis://localhost:6379
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
+          version: "0.13.9"
           python-version: "3.11"
-          cache: pip
-      - run: pip install -r requirements-infra.txt
-      - run: python -m pytest tests/ -q
+          enable-cache: true
+      - run: uv run --locked --extra api --extra infra pytest -q
 
   frontend:
+    name: Frontend build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
-        working-directory: frontend
-      - run: npm run build      # tsc -b runs first, so this typechecks too
-        working-directory: frontend
+      - run: npm run build

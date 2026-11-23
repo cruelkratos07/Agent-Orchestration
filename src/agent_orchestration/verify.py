@@ -1,26 +1,12 @@
-"""
-VERIFICATION GATE — runs before the supervisor, every single turn.
-
-THE PATTERN (adapted from ANI-IN/Multi-Agent-Customer-Support, rebuilt
-here for order support):
-
-  1. If already verified, pass straight through. Never re-verify.
-  2. If not verified, try to pull an identifier out of what the user
-     said and look it up in the database.
-  3. Found -> write customer_id into state ONCE, mark verified.
-  4. Not found -> ask for an identifier and stop the turn. No
-     specialist runs. The graph does not proceed.
-
-Step 4 is the interesting one. A naive design would let the agent
-answer anyway and just "be careful." Here the graph structurally
-cannot reach an order tool without a verified ID, because the routing
-edge checks `verified` before it checks anything else.
-"""
+"""Resolve a demo customer once before the supervisor can route a turn."""
 
 import re
+
 from langchain_core.messages import AIMessage
-from state import AgentState, last_user_text
-import db
+from langgraph.graph import END
+
+from agent_orchestration import db
+from agent_orchestration.state import AgentState, last_user_text
 
 VERIFY_PROMPT = (
     "Before I can look up order details I need to verify your identity. "
@@ -106,4 +92,4 @@ def verify_node(state: AgentState) -> dict:
 
 def route_after_verify(state: AgentState) -> str:
     """If verification failed, end the turn. Otherwise continue to supervisor."""
-    return "supervisor" if state.get("verified") else "END"
+    return "supervisor" if state.get("verified") else END

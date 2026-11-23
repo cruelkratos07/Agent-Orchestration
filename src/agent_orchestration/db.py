@@ -1,29 +1,5 @@
-"""
-DATABASE LAYER — SQLite by default, PostgreSQL when DATABASE_URL is set.
+"""Customer-scoped order data backed by SQLite or PostgreSQL."""
 
-DUAL-MODE, and deliberately so. Postgres is what a deployment wants; SQLite is
-what `git clone && pip install && python main.py` wants. Set DATABASE_URL and
-every query here runs against Postgres instead, with no other change.
-
-The only real difference between the two is the placeholder style - sqlite3
-takes ? and psycopg takes %s - so queries are written with ? and translated in
-one place (`_sql`). Everything else in the schema is portable between them.
-
-Two tables:
-  customers — who is allowed to ask about what
-  orders    — belongs to exactly one customer via customer_id
-
-The customer_id foreign key is the whole point. It's what makes it
-POSSIBLE to leak one customer's orders to another, and therefore what
-the verification step (verify.py) exists to protect.
-
-SECURITY NOTE: every query here uses parameterized placeholders (?),
-never f-strings or string concatenation. An LLM will be choosing what
-values get passed in here, so treating all of it as untrusted input
-is not optional.
-"""
-
-import json
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -33,7 +9,7 @@ from pathlib import Path
 DATABASE_URL = os.environ.get("DATABASE_URL") or None
 BACKEND = "postgres" if DATABASE_URL else "sqlite"
 
-DB_PATH = Path(__file__).parent / "support.db"
+DB_PATH = Path(os.environ.get("SUPPORT_DB_PATH", "support.db"))
 
 # Only a delivered order can be refunded. This mirrors the policy text in
 # tools.lookup_return_policy ("within 15 days of delivery"). A Shipped order
@@ -131,11 +107,13 @@ def init_db():
     # aliased column is the portable way to read a scalar.
     if cur.fetchone()["n"] == 0:
         cur.executemany(
-            _sql("INSERT INTO customers (customer_id, name, email, phone) VALUES (?, ?, ?, ?)"),
+            _sql(
+                "INSERT INTO customers (customer_id, name, email, phone) VALUES (?, ?, ?, ?)"
+            ),
             [
                 (1, "Ananya Sharma", "ananya.s@example.com", "+919876543210"),
-                (2, "Rohit Verma",   "rohit.v@example.com",  "+919812345678"),
-                (3, "Meera Nair",    "meera.n@example.com",  "+919900112233"),
+                (2, "Rohit Verma", "rohit.v@example.com", "+919812345678"),
+                (3, "Meera Nair", "meera.n@example.com", "+919900112233"),
             ],
         )
         cur.executemany(
@@ -143,13 +121,76 @@ def init_db():
                (order_id, customer_id, item, amount, status, carrier, eta, ordered_on)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""),
             [
-                ("ORD1001", 1, "Wireless ANC Earbuds Pro",   4999.00,  "Shipped",    "Delhivery", "2 days",              "2026-07-18"),
-                ("ORD1002", 1, "Mechanical Gaming Keyboard", 7499.00,  "Processing", None,        "4 days",              "2026-07-22"),
-                ("ORD1003", 2, "Ultra HD Action Camera 4K", 12999.00,  "Delivered",  "BlueDart",  "Delivered 2026-07-20", "2026-07-15"),
-                ("ORD1004", 3, "Smart Fitness Watch V2",     3499.00,  "Shipped",    "Ekart",     "1 day",               "2026-07-21"),
-                ("ORD1005", 2, "USB-C Fast Charger 65W",     1999.00,  "Cancelled",  None,        None,                  "2026-07-10"),
-                ("ORD1006", 1, "Bluetooth Speaker Mini",     2499.00,  "Delivered",  "Delhivery", "Delivered 2026-07-19", "2026-07-12"),
-                ("ORD1007", 3, "Laptop Cooling Pad",         1899.00,  "Delivered",  "Ekart",     "Delivered 2026-07-17", "2026-07-11"),
+                (
+                    "ORD1001",
+                    1,
+                    "Wireless ANC Earbuds Pro",
+                    4999.00,
+                    "Shipped",
+                    "Delhivery",
+                    "2 days",
+                    "2026-07-18",
+                ),
+                (
+                    "ORD1002",
+                    1,
+                    "Mechanical Gaming Keyboard",
+                    7499.00,
+                    "Processing",
+                    None,
+                    "4 days",
+                    "2026-07-22",
+                ),
+                (
+                    "ORD1003",
+                    2,
+                    "Ultra HD Action Camera 4K",
+                    12999.00,
+                    "Delivered",
+                    "BlueDart",
+                    "Delivered 2026-07-20",
+                    "2026-07-15",
+                ),
+                (
+                    "ORD1004",
+                    3,
+                    "Smart Fitness Watch V2",
+                    3499.00,
+                    "Shipped",
+                    "Ekart",
+                    "1 day",
+                    "2026-07-21",
+                ),
+                (
+                    "ORD1005",
+                    2,
+                    "USB-C Fast Charger 65W",
+                    1999.00,
+                    "Cancelled",
+                    None,
+                    None,
+                    "2026-07-10",
+                ),
+                (
+                    "ORD1006",
+                    1,
+                    "Bluetooth Speaker Mini",
+                    2499.00,
+                    "Delivered",
+                    "Delhivery",
+                    "Delivered 2026-07-19",
+                    "2026-07-12",
+                ),
+                (
+                    "ORD1007",
+                    3,
+                    "Laptop Cooling Pad",
+                    1899.00,
+                    "Delivered",
+                    "Ekart",
+                    "Delivered 2026-07-17",
+                    "2026-07-11",
+                ),
             ],
         )
 
@@ -170,7 +211,9 @@ def find_customer(identifier: str):
 
     # Try numeric customer ID
     if ident.isdigit():
-        cur.execute(_sql("SELECT * FROM customers WHERE customer_id = ?"), (int(ident),))
+        cur.execute(
+            _sql("SELECT * FROM customers WHERE customer_id = ?"), (int(ident),)
+        )
         row = cur.fetchone()
         if row:
             conn.close()
@@ -208,7 +251,9 @@ def get_order(order_id: str, customer_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        _sql("SELECT * FROM orders WHERE UPPER(order_id) = UPPER(?) AND customer_id = ?"),
+        _sql(
+            "SELECT * FROM orders WHERE UPPER(order_id) = UPPER(?) AND customer_id = ?"
+        ),
         (order_id.strip(), customer_id),
     )
     row = cur.fetchone()

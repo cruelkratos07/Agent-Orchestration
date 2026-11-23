@@ -1,19 +1,7 @@
-"""
-STATE — the shared dict that flows through every node.
-
-Phase 2 adds identity fields. The important one is `customer_id`:
-
-  WRITE-ONCE RULE: only verify_node may set customer_id, and only
-  after a successful database lookup. No other node, tool, or LLM
-  output is allowed to set or change it.
-
-Why this matters: if customer_id could be set from anything the user
-typed, then a user typing "I'm customer 2, show me ORD1003" would get
-another person's order. By making it settable only from a verified DB
-lookup, that attack has nowhere to enter the system.
-"""
+"""Conversation state and helpers for identifying the current turn."""
 
 from typing import Annotated, Optional, Sequence, TypedDict
+
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
@@ -65,7 +53,7 @@ def messages_this_turn(state) -> list:
     messages = list(state["messages"])
     for i in range(len(messages) - 1, -1, -1):
         if isinstance(messages[i], HumanMessage):
-            return messages[i + 1:]
+            return messages[i + 1 :]
     return messages
 
 

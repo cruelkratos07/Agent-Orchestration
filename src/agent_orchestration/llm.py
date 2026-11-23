@@ -1,42 +1,14 @@
-"""
-THE MODEL LAYER — every place Claude is actually used, and its fallback.
-
-Phase 8 exists because the project had exactly one LLM call in it: a routing
-classifier that a dict of keywords already handled. The architecture was the
-interesting part, but "where does the model earn its place?" had a thin answer.
-
-Four jobs now, each one something code genuinely cannot do well:
-
-  route()                  - intent routing (was already here)
-  resolve_order_reference()- "where's my camera?" -> a specific order ID
-  policy_answer()          - the policy rule applied to THIS order's dates
-  risk_summary()           - a one-line brief for the human reviewing a refund
-  answer_order_question()  - real tool calling, via bind_tools
-
-TWO RULES THAT APPLY TO ALL OF THEM
------------------------------------
-1. EVERY function has a deterministic fallback and is never worse than it.
-   If there is no API key, if the call raises, or if the model returns
-   something invalid, the deterministic branch runs. The no-key demo has to
-   keep working at every phase, and a flaky API must degrade rather than fail.
-
-2. THE MODEL SUGGESTS, THE CODE VERIFIES.
-   Anything the model returns that could reach the database is validated
-   against a customer-scoped set first. The model cannot widen its own access
-   by returning a value nobody offered it - see resolve_order_reference and
-   answer_order_question.
-"""
+"""Provider selection, model calls and deterministic fallbacks."""
 
 import os
 import re
 import sys
 from datetime import date, datetime, timezone
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
-import cache
-import db
-from tools import check_order_status, list_my_orders
+from agent_orchestration import cache, db
+from agent_orchestration.tools import check_order_status, list_my_orders
 
 # --------------------------------------------------------------------------
 # Provider selection
@@ -308,7 +280,7 @@ def _fallback_order_reference(text: str, orders: list):
         return match.group(0)
     lowered = (text or "").lower()
     if orders and any(word in lowered for word in RECENCY_WORDS):
-        return orders[0]["order_id"]        # db.list_orders is newest-first
+        return orders[0]["order_id"]  # db.list_orders is newest-first
     return None
 
 
@@ -328,10 +300,13 @@ def resolve_order_reference(text: str, customer_id: int):
     if model is None:
         return _fallback_order_reference(text, orders)
 
-    catalogue = "\n".join(
-        f"- {o['order_id']}: {o['item']} ({o['status']}, ordered {o['ordered_on']})"
-        for o in orders
-    ) or "- (no orders on this account)"
+    catalogue = (
+        "\n".join(
+            f"- {o['order_id']}: {o['item']} ({o['status']}, ordered {o['ordered_on']})"
+            for o in orders
+        )
+        or "- (no orders on this account)"
+    )
 
     prompt = (
         "Match the customer's message to exactly one of their orders.\n"
@@ -355,6 +330,7 @@ def resolve_order_reference(text: str, customer_id: int):
 # --------------------------------------------------------------------------
 # 3. Grounded policy answers
 # --------------------------------------------------------------------------
+
 
 def policy_answer(text: str, canned: str, order=None, today: date = None) -> str:
     """
@@ -402,6 +378,7 @@ def policy_answer(text: str, canned: str, order=None, today: date = None) -> str
 # --------------------------------------------------------------------------
 # 4. Risk summary for the human reviewer
 # --------------------------------------------------------------------------
+
 
 def risk_summary(order, request_text: str, reason: str) -> str:
     """One line for the reviewer. Falls back to the mechanical reason string."""
@@ -479,10 +456,14 @@ def run_order_tools(text: str, customer_id: int):
                 observation = f"No such tool: {call['name']}"
             else:
                 args = dict(call.get("args") or {})
-                args.pop("customer_id", None)          # never trust it
-                args["customer_id"] = customer_id      # inject the verified one
-                trace.append({"tool": call["name"], "args": {k: v for k, v in args.items()
-                                                            if k != "customer_id"}})
+                args.pop("customer_id", None)  # never trust it
+                args["customer_id"] = customer_id  # inject the verified one
+                trace.append(
+                    {
+                        "tool": call["name"],
+                        "args": {k: v for k, v in args.items() if k != "customer_id"},
+                    }
+                )
                 observation = tool.invoke(args)
             messages.append(
                 ToolMessage(content=str(observation), tool_call_id=call.get("id", ""))

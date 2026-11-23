@@ -3,16 +3,17 @@ import type { ThreadSummary } from './api'
 interface Props {
   threads: ThreadSummary[]
   activeThread: string | null
+  newDisabled: boolean
   onOpen: (threadId: string) => void
   onNew: () => void
 }
 
-export default function ThreadList({ threads, activeThread, onOpen, onNew }: Props) {
+export default function ThreadList({ threads, activeThread, newDisabled, onOpen, onNew }: Props) {
   return (
     <aside className="rail">
       <div className="rail__head">
         <h2>Conversations</h2>
-        <button className="ghost" onClick={onNew}>New</button>
+        <button className="ghost" disabled={newDisabled} onClick={onNew}>New</button>
       </div>
 
       {!threads.length && <p className="hint">No conversations yet.</p>}
@@ -22,6 +23,7 @@ export default function ThreadList({ threads, activeThread, onOpen, onNew }: Pro
           <li key={thread.thread_id}>
             <button
               className={`rail__item${thread.thread_id === activeThread ? ' is-active' : ''}`}
+              aria-current={thread.thread_id === activeThread || undefined}
               onClick={() => onOpen(thread.thread_id)}
             >
               <span className="rail__who">

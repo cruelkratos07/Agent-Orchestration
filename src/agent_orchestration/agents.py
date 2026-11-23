@@ -1,29 +1,11 @@
-"""
-NODES — supervisor + specialists.
-
-PHASE 8: the model does the language work; this file still does the security
-work. Every LLM call lives in llm.py, and every one of them has a
-deterministic fallback, so the whole graph still runs with no API key.
-
-PHASE 2 CHANGE: order_lookup_node reads customer_id from STATE, never
-from the user's message. The user can type "show me customer 7's order"
-all they want; the tool still gets the verified ID that verify_node
-wrote after a real database lookup.
-
-TEST_MODE: with no ANTHROPIC_API_KEY set, routing uses keyword matching
-so the whole graph stays runnable and demoable without live API calls.
-"""
-
-import re
+"""Supervisor and specialists for order support and refund review."""
 
 from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
-import db
-import llm
-from llm import TEST_MODE, keyword_route, normalize_route  # re-exported
-from state import AgentState, last_user_text, specialists_used
-from tools import (
+from agent_orchestration import db, llm
+from agent_orchestration.state import AgentState, last_user_text, specialists_used
+from agent_orchestration.tools import (
     check_order_status,
     escalation_reason,
     list_my_orders,
@@ -35,8 +17,6 @@ from tools import (
 # in supervisor_node already bound a turn, so hitting this means routing
 # misfired - and a bounded wrong answer beats GraphRecursionError in a demo.
 MAX_SPECIALIST_HOPS = 3
-
-VALID_ROUTES = llm.VALID_ROUTES
 
 
 def supervisor_node(state: AgentState) -> dict:
@@ -84,7 +64,7 @@ def order_lookup_node(state: AgentState) -> dict:
     With no model, the previous deterministic behaviour: an explicit order ID
     if the message contains one, otherwise list everything.
     """
-    customer_id = state["customer_id"]          # verified, trusted
+    customer_id = state["customer_id"]  # verified, trusted
     text = last_user_text(state)
 
     if llm.active_model() is not None:
@@ -92,7 +72,7 @@ def order_lookup_node(state: AgentState) -> dict:
             answer, _trace = llm.run_order_tools(text, customer_id)
             return {"messages": [AIMessage(content=answer, name="order_agent")]}
         except Exception:
-            pass    # fall through to the deterministic path below
+            pass  # fall through to the deterministic path below
 
     order_id = llm.resolve_order_reference(text, customer_id)
     if order_id:
@@ -166,7 +146,7 @@ def refund_node(state: AgentState) -> dict:
       approval issues two refunds - which the idempotent UPDATE would absorb,
       hiding the bug rather than surfacing it.
     """
-    customer_id = state["customer_id"]          # verified, trusted
+    customer_id = state["customer_id"]  # verified, trusted
     text = last_user_text(state)
 
     order_id = llm.resolve_order_reference(text, customer_id)
@@ -177,8 +157,11 @@ def refund_node(state: AgentState) -> dict:
 
     # --- reads only, above the interrupt: safe to run twice ---
     order = db.get_order(order_id, customer_id)
-    if order is None or order["refund_status"] == "Refunded" or \
-            order["status"] not in db.REFUNDABLE_STATUSES:
+    if (
+        order is None
+        or order["refund_status"] == "Refunded"
+        or order["status"] not in db.REFUNDABLE_STATUSES
+    ):
         # Nothing to decide. Let the tool produce the explanation.
         return _refund_reply(
             process_refund.invoke(

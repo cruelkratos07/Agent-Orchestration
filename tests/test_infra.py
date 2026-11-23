@@ -8,14 +8,14 @@ Set them to exercise the real thing:
     $env:REDIS_URL    = "redis://127.0.0.1:6379"
     $env:DATABASE_URL = "postgresql://user:pass@localhost/support"
 """
+
 import os
 
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration
 
-import cache
-import db
+from agent_orchestration import cache, db
 
 REDIS_URL = os.environ.get("REDIS_URL")
 # Captured at import, BEFORE conftest's autouse fixture pins the backend to
@@ -58,6 +58,7 @@ def postgres(monkeypatch):
 
 # ---------------------------------------------------------------- cache
 
+
 def test_cache_falls_back_to_in_process_without_redis(monkeypatch):
     monkeypatch.setattr(cache, "REDIS_URL", None)
     assert cache.install() == "in-process"
@@ -66,7 +67,7 @@ def test_cache_falls_back_to_in_process_without_redis(monkeypatch):
 
 def test_unreachable_redis_degrades_rather_than_failing(monkeypatch, capsys):
     """A cache is an optimisation. Losing it must never take the system down."""
-    monkeypatch.setattr(cache, "REDIS_URL", "redis://127.0.0.1:1")   # nothing there
+    monkeypatch.setattr(cache, "REDIS_URL", "redis://127.0.0.1:1")  # nothing there
     assert cache.install() == "in-process"
     assert "Redis unreachable" in capsys.readouterr().out
 
@@ -81,7 +82,9 @@ def redis_cache():
 
 @needs_redis
 def test_round_trip_and_ttl(redis_cache):
-    redis_cache.update("p", "cfg", [ChatGeneration(message=AIMessage(content="order_lookup"))])
+    redis_cache.update(
+        "p", "cfg", [ChatGeneration(message=AIMessage(content="order_lookup"))]
+    )
     generations = redis_cache.lookup("p", "cfg")
     assert generations[0].message.content == "order_lookup"
     assert 0 < redis_cache.client.ttl(redis_cache._key("p", "cfg")) <= 60
@@ -93,9 +96,17 @@ def test_tool_calls_survive_the_cache(redis_cache):
     The bug this guards is nasty: a cache that dropped tool_calls would break
     the tool-calling loop only on the SECOND time a prompt was seen.
     """
-    calls = [{"name": "check_order_status", "args": {"order_id": "ORD1002"},
-              "id": "c1", "type": "tool_call"}]
-    redis_cache.update("p", "cfg", [ChatGeneration(message=AIMessage(content="", tool_calls=calls))])
+    calls = [
+        {
+            "name": "check_order_status",
+            "args": {"order_id": "ORD1002"},
+            "id": "c1",
+            "type": "tool_call",
+        }
+    ]
+    redis_cache.update(
+        "p", "cfg", [ChatGeneration(message=AIMessage(content="", tool_calls=calls))]
+    )
     assert redis_cache.lookup("p", "cfg")[0].message.tool_calls == calls
 
 
@@ -118,8 +129,8 @@ def test_stats_count_entries_not_counters(redis_cache):
     included the stats keys and reported 2 for a single cached response.
     """
     redis_cache.update("p", "cfg", [ChatGeneration(message=AIMessage(content="x"))])
-    redis_cache.lookup("p", "cfg")          # 1 hit
-    redis_cache.lookup("q", "cfg")          # 1 miss
+    redis_cache.lookup("p", "cfg")  # 1 hit
+    redis_cache.lookup("q", "cfg")  # 1 miss
     stats = redis_cache.stats()
     assert stats["entries"] == 1
     assert stats["hits"] == 1 and stats["misses"] == 1
@@ -129,16 +140,19 @@ def test_stats_count_entries_not_counters(redis_cache):
 @needs_redis
 def test_cache_is_shared_across_clients(redis_cache):
     """Two API processes must see one cache, or the point is lost."""
-    redis_cache.update("shared", "cfg", [ChatGeneration(message=AIMessage(content="hi"))])
+    redis_cache.update(
+        "shared", "cfg", [ChatGeneration(message=AIMessage(content="hi"))]
+    )
     other = cache.RedisResponseCache(REDIS_URL, ttl=60, prefix="pytest:llm")
     assert other.lookup("shared", "cfg")[0].message.content == "hi"
 
 
 # ---------------------------------------------------------------- data layer
 
+
 def test_placeholder_translation_is_backend_specific(monkeypatch):
     sql = "SELECT * FROM orders WHERE order_id = ? AND customer_id = ?"
-    assert db._sql(sql) == sql                       # sqlite: unchanged
+    assert db._sql(sql) == sql  # sqlite: unchanged
     monkeypatch.setattr(db, "BACKEND", "postgres")
     assert db._sql(sql).count("%s") == 2
     assert "?" not in db._sql(sql)
@@ -158,14 +172,18 @@ def test_security_invariants_hold_on_postgres(postgres):
     The whole point of dual-mode: the same guarantees, both backends. These
     mirror the SQLite assertions in test_security.py exactly.
     """
-    assert db.get_order("ORD1003", 2) is not None       # real owner
-    assert db.get_order("ORD1003", 1) is None            # someone else
-    assert {o["order_id"] for o in db.list_orders(1)} == {"ORD1001", "ORD1002", "ORD1006"}
+    assert db.get_order("ORD1003", 2) is not None  # real owner
+    assert db.get_order("ORD1003", 1) is None  # someone else
+    assert {o["order_id"] for o in db.list_orders(1)} == {
+        "ORD1001",
+        "ORD1002",
+        "ORD1006",
+    }
 
 
 @needs_postgres
 def test_refund_scoping_and_idempotency_hold_on_postgres(postgres):
-    assert db.refund_order("ORD1006", 2) == 0            # not customer 2's order
-    assert db.refund_order("ORD1002", 1) == 0            # not delivered
-    assert db.refund_order("ORD1006", 1) == 1            # the real thing
-    assert db.refund_order("ORD1006", 1) == 0            # idempotent
+    assert db.refund_order("ORD1006", 2) == 0  # not customer 2's order
+    assert db.refund_order("ORD1002", 1) == 0  # not delivered
+    assert db.refund_order("ORD1006", 1) == 1  # the real thing
+    assert db.refund_order("ORD1006", 1) == 0  # idempotent
